@@ -86,11 +86,11 @@ def _login(page):
     # Por ahora solo navegamos a la URL. Si ya tienes el login automatizado,
     # coloca aquí tus page.fill(...), page.click(...), etc.
     page.goto(AV_URL, wait_until="domcontentloaded")
-    page.wait_for_timeout(5000)
+    page.wait_for_timeout(3000)
     # Ejemplo a completar:
-    page.fill("input[name='username']", AV_USER),
-    page.fill("input[name='password']", AV_PASS),
-    page.click("button:has-text('Ingresar')"),
+    page.fill("input[name='username']", AV_USER)
+    page.fill("input[name='password']", AV_PASS)
+    page.click("button:has-text('Ingresar')")
     # page.wait_for_load_state("networkidle")
 
 # ----------- Crear en AV (gancho para PRUEBA VISUAL / PROD) -----------
