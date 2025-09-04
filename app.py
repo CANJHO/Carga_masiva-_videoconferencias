@@ -1,10 +1,11 @@
+# app.py
 import io
 import pandas as pd
 import streamlit as st
 from datetime import datetime
 
 st.set_page_config(page_title="Carga masiva | Aula Virtual", layout="wide")
-st.title("📥 Carga masiva de videoconferencias (Aula Virtual) — Validación")
+st.title("📥 Carga masiva de videoconferencias (Aula Virtual)")
 
 # -----------------------
 # Definición de plantilla
@@ -20,11 +21,10 @@ COLUMNAS_REQUERIDAS = [
     "INICIO",   # ej. 2025-08-15 07:40 (hora local Lima)
     "FIN",      # ej. 2025-08-15 09:20
     "DURACION", # minutos (si está vacío, lo calcularemos)
-    "DIAS"      # como lo espera el AV (se procesará en el Paso 2)
+    "DIAS"      # como lo espera el AV
 ]
 
 st.subheader("1) Descargar plantilla")
-
 plantilla = pd.DataFrame(columns=COLUMNAS_REQUERIDAS)
 buf = io.BytesIO()
 with pd.ExcelWriter(buf, engine="openpyxl") as w:
@@ -42,7 +42,7 @@ with pd.ExcelWriter(buf, engine="openpyxl") as w:
             "Fecha y hora de inicio (ej. 2025-08-15 07:40).",
             "Fecha y hora de fin.",
             "Minutos de duración. Si lo dejas vacío, lo calcularemos con INICIO y FIN.",
-            "Días tal como espera el AV (lo interpretaremos en el Paso 2)."
+            "Días tal como espera el AV."
         ]
     })
     ayuda.to_excel(w, index=False, sheet_name="AYUDA")
@@ -120,100 +120,98 @@ if archivo is not None:
     else:
         st.success("✅ Listo para el siguiente paso (ejecución).")
 
-st.divider()
-st.subheader("3) ¿Qué sigue?")
-st.markdown(
-    "En el siguiente paso podrás **aplicar fechas globales** y luego **ejecutar el lote** "
-    "en modo **PRUEBA** o **PRODUCCIÓN**."
-)
+    st.divider()
+    st.subheader("2.1) Aplicar fechas globales (opcional)")
 
-# ===== 2.1) Aplicar FECHAS GLOBALES (opcional) =====
-st.subheader("2.1) Aplicar fechas globales (opcional)")
+    colf1, colf2 = st.columns(2)
+    fecha_inicio_global = colf1.date_input("Fecha de INICIO (global)")
+    fecha_fin_global    = colf2.date_input("Fecha de FIN (global)", value=fecha_inicio_global)
 
-colf1, colf2 = st.columns(2)
-fecha_inicio_global = colf1.date_input("Fecha de INICIO (global)")
-fecha_fin_global    = colf2.date_input("Fecha de FIN (global)", value=fecha_inicio_global)
+    aplicar = st.button("📌 Aplicar fechas globales a INICIO y FIN y preparar descarga")
 
-aplicar = st.button("📌 Aplicar fechas globales a INICIO y FIN y preparar descarga")
+    def _combina_fecha(fecha, x_datetime):
+        """Reemplaza solo la FECHA, conserva la HORA."""
+        if x_datetime is None:
+            return None
+        return datetime.combine(fecha, x_datetime.time())
 
-def _combina_fecha(fecha, x_datetime):
-    """Reemplaza solo la FECHA, conserva la HORA."""
-    if x_datetime is None:
-        return None
-    return datetime.combine(fecha, x_datetime.time())
+    if aplicar:
+        # Trabajar sobre el df original subido (df)
+        df_adj = df.copy()
+        df_adj.columns = [c.upper().strip() for c in df_adj.columns]
 
-if archivo is not None and aplicar:
-    # Trabajar sobre el df original subido (df)
-    df_adj = df.copy()
-    df_adj.columns = [c.upper().strip() for c in df_adj.columns]
+        # Parse a datetime para poder separar hora
+        ini_dt = df_adj["INICIO"].apply(_a_dt)
+        fin_dt = df_adj["FIN"].apply(_a_dt)
 
-    # Parse a datetime para poder separar hora
-    ini_dt = df_adj["INICIO"].apply(_a_dt)
-    fin_dt = df_adj["FIN"].apply(_a_dt)
+        # Reemplazar solo la fecha con las fechas globales elegidas
+        df_adj["INICIO"] = [ _combina_fecha(fecha_inicio_global, v) for v in ini_dt ]
+        df_adj["FIN"]    = [ _combina_fecha(fecha_fin_global,    v) for v in fin_dt ]
 
-    # Reemplazar solo la fecha con las fechas globales elegidas
-    df_adj["INICIO"] = [ _combina_fecha(fecha_inicio_global, v) for v in ini_dt ]
-    df_adj["FIN"]    = [ _combina_fecha(fecha_fin_global,    v) for v in fin_dt ]
-
-    # Recalcular DURACION si está vacía o no numérica
-    def _dur_out(row):
-        val = row.get("DURACION")
-        try:
-            if pd.isna(val) or str(val).strip() == "":
+        # Recalcular DURACION si está vacía o no numérica
+        def _dur_out(row):
+            val = row.get("DURACION")
+            try:
+                if pd.isna(val) or str(val).strip() == "":
+                    return _duracion_min(row["INICIO"], row["FIN"])
+                return int(val)
+            except Exception:
                 return _duracion_min(row["INICIO"], row["FIN"])
-            return int(val)
-        except Exception:
-            return _duracion_min(row["INICIO"], row["FIN"])
 
-    df_adj["DURACION"] = df_adj.apply(_dur_out, axis=1)
+        df_adj["DURACION"] = df_adj.apply(_dur_out, axis=1)
 
-    st.success("Fechas aplicadas. Vista previa (primeras 20 filas):")
-    st.dataframe(df_adj.head(20), use_container_width=True)
+        st.success("Fechas aplicadas. Vista previa (primeras 20 filas):")
+        st.dataframe(df_adj.head(20), use_container_width=True)
 
-    # Descargar Excel “con fechas”
-    buf_out = io.BytesIO()
-    with pd.ExcelWriter(
-        buf_out,
-        engine="openpyxl",
-        date_format="yyyy-mm-dd hh:mm",
-        datetime_format="yyyy-mm-dd hh:mm"
-    ) as w:
-        df_adj.to_excel(w, index=False, sheet_name="Hoja1")
+        # Descargar Excel “con fechas”
+        buf_out = io.BytesIO()
+        with pd.ExcelWriter(
+            buf_out,
+            engine="openpyxl",
+            date_format="yyyy-mm-dd hh:mm",
+            datetime_format="yyyy-mm-dd hh:mm"
+        ) as w:
+            df_adj.to_excel(w, index=False, sheet_name="Hoja1")
 
-    st.download_button(
-        "💾 Descargar Excel con fechas aplicadas",
-        data=buf_out.getvalue(),
-        file_name="videoconferencias_con_fechas.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+        st.download_button(
+            "💾 Descargar Excel con fechas aplicadas",
+            data=buf_out.getvalue(),
+            file_name="videoconferencias_con_fechas.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
-    # (Opcional) Dejarlo en memoria para ejecutar de frente sin volver a subir
-    st.session_state["df_para_ejecucion"] = df_adj
+        # Guardar en sesión para ejecutar sin volver a subir
+        st.session_state["df_para_ejecucion"] = df_adj
 
-# ========================
-# 3) Ejecutar (prueba/producción)
-# ========================
-st.subheader("3) Ejecutar lote")
+    # ========================
+    # 3) Ejecutar (prueba/producción)
+    # ========================
+    st.divider()
+    st.subheader("3) Ejecutar lote")
 
-col1, col2 = st.columns([2,1], vertical_alignment="center")
-with col1:
-    modo = st.selectbox(
-        "Modo",
-        ["PRUEBA (sin navegador)", "PRUEBA VISUAL (navegador, sin guardar)", "PRODUCCIÓN"],
-        index=0
-    )
-with col2:
-    headless = st.checkbox("Headless (oculto)", value=(modo!="PRUEBA VISUAL"),
-                           help="Para PRUEBA VISUAL se recomienda desmarcarlo y ver el navegador.")
+    col1, col2 = st.columns([2,1])
+    with col1:
+        modo = st.selectbox(
+            "Modo",
+            ["PRUEBA (sin navegador)", "PRUEBA VISUAL (navegador, sin guardar)", "PRODUCCIÓN"],
+            index=0
+        )
+    with col2:
+        # En PRUEBA VISUAL se recomienda ver el navegador (desmarcar headless)
+        headless_default = (modo != "PRUEBA VISUAL (navegador, sin guardar)")
+        headless = st.checkbox(
+            "Headless (oculto)",
+            value=headless_default,
+            help="Desmarca para ver el navegador. En PRUEBA VISUAL se recomienda desmarcado."
+        )
 
-if archivo is not None:
     ejecutar = st.button("🚀 Ejecutar ahora")
     if ejecutar:
         from runner_av import run_batch
         df_to_run = st.session_state.get("df_para_ejecucion", df)
         resumen = run_batch(
             df_to_run,
-            modo=modo,                # ← ahora pasamos el modo textual
+            modo=modo,          # ← pasamos el modo textual que espera runner_av.py
             headless=headless
         )
 
@@ -224,5 +222,4 @@ if archivo is not None:
             st.write(f"🖼️ Capturas: {resumen['screenshots_dir']}")
         st.caption("Los archivos se guardan en 'logs/' y las capturas en 'screenshots/'.")
 else:
-    st.info("Sube primero tu Excel para habilitar la ejecución.")
-
+    st.info("Sube primero tu Excel para habilitar la validación y la ejecución.")
