@@ -195,24 +195,34 @@ if archivo is not None and aplicar:
 # ========================
 st.subheader("3) Ejecutar lote")
 
-col1, col2, col3 = st.columns([1,1,2], vertical_alignment="center")
+col1, col2 = st.columns([2,1], vertical_alignment="center")
 with col1:
-    modo = st.selectbox("Modo", ["PRUEBA", "PRODUCCIÓN"], index=0)
+    modo = st.selectbox(
+        "Modo",
+        ["PRUEBA (sin navegador)", "PRUEBA VISUAL (navegador, sin guardar)", "PRODUCCIÓN"],
+        index=0
+    )
 with col2:
-    headless = st.checkbox("Headless (oculto)", value=True, help="Solo afecta en PRODUCCIÓN")
+    headless = st.checkbox("Headless (oculto)", value=(modo!="PRUEBA VISUAL"),
+                           help="Para PRUEBA VISUAL se recomienda desmarcarlo y ver el navegador.")
 
 if archivo is not None:
     ejecutar = st.button("🚀 Ejecutar ahora")
     if ejecutar:
         from runner_av import run_batch
-        # Si ya aplicaste fechas y quieres usar ese df ajustado:
         df_to_run = st.session_state.get("df_para_ejecucion", df)
-        resumen = run_batch(df_to_run, modo_prueba=(modo=="PRUEBA"), headless=headless)
+        resumen = run_batch(
+            df_to_run,
+            modo=modo,                # ← ahora pasamos el modo textual
+            headless=headless
+        )
 
         st.success(f"✅ Lote terminado • Total: {resumen['total']} • OK: {resumen['ok']} • Fallas: {resumen['fail']}")
         st.write(f"📄 Log TXT: {resumen['log_txt']}")
         st.write(f"📊 Log CSV: {resumen['log_csv']}")
-        st.caption("Los archivos se guardan en la carpeta 'logs/'. En producción, si ocurre un error por fila, se guarda una captura en 'screenshots/'.")
+        if resumen.get("screenshots_dir"):
+            st.write(f"🖼️ Capturas: {resumen['screenshots_dir']}")
+        st.caption("Los archivos se guardan en 'logs/' y las capturas en 'screenshots/'.")
 else:
     st.info("Sube primero tu Excel para habilitar la ejecución.")
 

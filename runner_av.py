@@ -94,23 +94,61 @@ def _login(page):
     # page.wait_for_load_state("networkidle")
     pass
 
-def create_in_av(page, row: Dict[str, Any]) -> Tuple[bool, str, str]:
+def create_in_av(page, row: Dict[str, Any], save: bool = True, screenshot_path: str = "") -> Tuple[bool, str, str]:
     """
-    Crea una videoconferencia en el AV a partir de 'row'.
-    DEVUELVE: (ok, message, meeting_url)
-    En el Paso 3 pegamos aquí los selectores reales (Nueva videoconferencia, selects, guardar, etc.)
+    Crea o simula la creación de una videoconferencia.
+    - save=False  → solo rellena y toma captura (PRUEBA VISUAL).
+    - save=True   → hace clic en Guardar (PRODUCCIÓN).
+
+    Devuelve: (ok, message, meeting_url)
     """
-    # --- SELECTORES REALES AQUÍ EN EL PASO 3 ---
-    # Debe usar: row["CORREO"], row["TEMA"], row["PERIODO"], row["FACULTAD"],
-    #            row["ESCUELA"], row["CURSO"], row["GRUPO"], row["_INICIO_DT"],
-    #            row["_FIN_DT"], row["DURACION_CALC"], row["DIAS"]
-    ok = False
-    msg = "No implementado aún"
+
+    # 1) Abrir modal "Nueva videoconferencia"
+    # page.click("text= Nueva videoconferencia")  # ← TU SELECTOR
+
+    # 2) Seleccionar PERIODO / FACULTAD / ESCUELA / CURSO / GRUPO
+    # seleccionar_opcion_unica(page, "selector-periodo", row["PERIODO"])
+    # seleccionar_opcion_unica(page, "selector-facultad", row["FACULTAD"])
+    # seleccionar_opcion_unica(page, "selector-escuela", row["ESCUELA"])
+    # seleccionar_opcion_unica(page, "selector-curso", row["CURSO"])
+    # seleccionar_opcion_unica(page, "selector-grupo", row["GRUPO"])
+
+    # 3) Host/correo
+    # page.fill("input[name='correo']", row["CORREO"])
+
+    # 4) Título / tema
+    # page.fill("input[name='tema']", row["TEMA"])
+
+    # 5) Fechas y duración (usa row["_INICIO_DT"], row["_FIN_DT"], row["DURACION_CALC"])
+    # page.fill("input[name='inicio']", formatea(row["_INICIO_DT"]))
+    # page.fill("input[name='fin']",    formatea(row["_FIN_DT"]))
+    # page.fill("input[name='duracion']", str(row["DURACION_CALC"]))
+
+    # 6) Días (si corresponde en tu UI)
+    # marcar_dias(page, row["DIAS"])
+
+    # ----- PRUEBA VISUAL: NO GUARDAR -----
+    if not save:
+        if screenshot_path:
+            page.screenshot(path=screenshot_path, full_page=True)
+        return True, "Simulación visual: formulario rellenado (no se guardó).", ""
+
+    # 7) Guardar
+    # page.click("button:has-text('Guardar')")
+
+    # 8) Leer SweetAlert / mensaje y (si es posible) URL/ID de la reunión
+    # msg = page.locator(".swal-text,.swal2-html-container").inner_text()
+    # url = extraer_url(page)  # si tu UI la muestra
+    msg = "Guardado (implementa lectura de mensaje)"
     url = ""
-    return ok, msg, url
+    return True, msg, url
+
 
 # ---------- API principal del runner ----------
-def run_batch(df: pd.DataFrame, modo_prueba: bool, headless: bool) -> Dict[str, Any]:
+def run_batch(df: pd.DataFrame, modo: str, headless: bool) -> Dict[str, Any]:
+    """
+    modo: "PRUEBA (sin navegador)" | "PRUEBA VISUAL (navegador, sin guardar)" | "PRODUCCIÓN"
+    """
     if not AV_URL or not AV_USER or not AV_PASS:
         raise RuntimeError("Faltan variables de entorno AV_URL/AV_USER/AV_PASS en .env")
 
@@ -118,9 +156,10 @@ def run_batch(df: pd.DataFrame, modo_prueba: bool, headless: bool) -> Dict[str, 
 
     resultados: List[Dict[str, Any]] = []
     base_log_name = "cargamasiva_av"
+    screenshots_dir = SS_DIR
 
-    if modo_prueba:
-        # Simular sin abrir navegador
+    # ---------------- PRUEBA (sin navegador) ----------------
+    if modo.startswith("PRUEBA (sin navegador)"):
         for _, r in t.iterrows():
             resultados.append({
                 "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -136,31 +175,40 @@ def run_batch(df: pd.DataFrame, modo_prueba: bool, headless: bool) -> Dict[str, 
                 "fin": str(r.get("_FIN_DT","")),
                 "duracion": str(r.get("DURACION_CALC","")),
                 "dias": str(r.get("DIAS","")),
-                "mensaje": "OK (modo prueba)",
+                "mensaje": "OK (modo prueba sin navegador)",
                 "meeting_url": ""
             })
         txt, csv = _write_logs(base_log_name+"_PRUEBA", resultados)
-        summary = {
+        return {
             "total": len(resultados),
-            "ok": len([r for r in resultados if r["status"]=="SIMULADO"]),
+            "ok": len(resultados),
             "fail": 0,
             "log_txt": txt,
             "log_csv": csv
         }
-        return summary
 
-    # Producción: Playwright
+    # --------------- VISUAL y PRODUCCIÓN (con navegador) ---------------
+    visual = modo.startswith("PRUEBA VISUAL")
+    produccion = modo.startswith("PRODUCCIÓN")
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless)
         context = browser.new_context(locale="es-PE", timezone_id=TZ)
         page = context.new_page()
         try:
-            _login(page)
+            _login(page)  # ← Implementa tus selectores reales de login aquí
 
             for i, r in t.iterrows():
                 try:
-                    ok, msg, url = create_in_av(page, r.to_dict())
-                    status = "GUARDADO" if ok else "ERROR"
+                    # ruta de captura por fila
+                    ss_path = os.path.join(screenshots_dir, f"{'visual' if visual else 'prod'}_row{i+1}_{_now_tag()}.png")
+                    ok, msg, url = create_in_av(
+                        page,
+                        r.to_dict(),
+                        save=not visual,                 # ← en VISUAL no guardamos
+                        screenshot_path=ss_path          # ← capturamos formulario lleno
+                    )
+                    status = "SIMULADO_VISUAL" if visual else ("GUARDADO" if ok else "ERROR")
                     resultados.append({
                         "timestamp": datetime.now().isoformat(timespec="seconds"),
                         "status": status,
@@ -179,12 +227,9 @@ def run_batch(df: pd.DataFrame, modo_prueba: bool, headless: bool) -> Dict[str, 
                         "meeting_url": url
                     })
                 except Exception as e:
-                    # screenshot por fila fallida
-                    ss_path = os.path.join(SS_DIR, f"error_row{i+1}_{_now_tag()}.png")
-                    try:
-                        page.screenshot(path=ss_path, full_page=True)
-                    except:
-                        pass
+                    ss_path = os.path.join(screenshots_dir, f"error_row{i+1}_{_now_tag()}.png")
+                    try: page.screenshot(path=ss_path, full_page=True)
+                    except: pass
                     resultados.append({
                         "timestamp": datetime.now().isoformat(timespec="seconds"),
                         "status": "ERROR",
@@ -202,7 +247,6 @@ def run_batch(df: pd.DataFrame, modo_prueba: bool, headless: bool) -> Dict[str, 
                         "mensaje": f"Excepción: {e}",
                         "meeting_url": ""
                     })
-
         finally:
             try:
                 context.close()
@@ -210,12 +254,13 @@ def run_batch(df: pd.DataFrame, modo_prueba: bool, headless: bool) -> Dict[str, 
             except:
                 pass
 
-    txt, csv = _write_logs(base_log_name, resultados)
-    summary = {
+    suf = "_VISUAL" if visual else ""
+    txt, csv = _write_logs(base_log_name+suf, resultados)
+    return {
         "total": len(resultados),
-        "ok": len([r for r in resultados if r["status"] in ("GUARDADO","SIMULADO")]),
+        "ok": len([r for r in resultados if r["status"] in ("SIMULADO_VISUAL","GUARDADO")]),
         "fail": len([r for r in resultados if r["status"] == "ERROR"]),
         "log_txt": txt,
-        "log_csv": csv
+        "log_csv": csv,
+        "screenshots_dir": screenshots_dir
     }
-    return summary
