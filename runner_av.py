@@ -83,15 +83,83 @@ def _write_logs(base_name: str, rows: List[Dict[str, Any]]) -> Tuple[str, str]:
 
 # ----------- Login (coloca aquí tus selectores reales) -----------
 def _login(page):
-    # Por ahora solo navegamos a la URL. Si ya tienes el login automatizado,
-    # coloca aquí tus page.fill(...), page.click(...), etc.
+    # 1) Ir al login
     page.goto(AV_URL, wait_until="domcontentloaded")
-    page.wait_for_timeout(3000)
-    # Ejemplo a completar:
-    page.fill("input[name='username']", AV_USER)
-    page.fill("input[name='password']", AV_PASS)
-    page.click("button:has-text('Ingresar')")
-    # page.wait_for_load_state("networkidle")
+    page.wait_for_timeout(800)
+
+    # (debug) verifica que las credenciales EXISTEN
+    if not AV_USER or not AV_PASS:
+        raise RuntimeError("AV_USER o AV_PASS están vacíos. Revisa tu .env y reinicia la app.")
+
+    # 2) USERNAME: intentos por id/name/placeholder/text input
+    username_filled = False
+    for sel in [
+        "input[name='username']",
+        "input#username",
+        "input[name*='user' i]",
+        "input[placeholder*='Usuario' i]",
+        "input[placeholder*='Correo' i]",
+    ]:
+        try:
+            page.locator(sel).first.wait_for(state="visible", timeout=3000)
+            page.locator(sel).first.fill(AV_USER)
+            username_filled = True
+            break
+        except:
+            continue
+    if not username_filled:
+        # último intento genérico
+        try:
+            page.locator("input[type='text']").first.fill(AV_USER)
+            username_filled = True
+        except:
+            pass
+
+    # 3) PASSWORD: por type/name/placeholder
+    pwd_filled = False
+    for sel in [
+        "input[type='password']",
+        "input[name='password']",
+        "input[placeholder*='Contraseña' i]",
+    ]:
+        try:
+            page.locator(sel).first.wait_for(state="visible", timeout=3000)
+            page.locator(sel).first.fill(AV_PASS)
+            pwd_filled = True
+            break
+        except:
+            continue
+
+    # 4) Clic en el botón Ingresar (varios textos posibles)
+    clicked = False
+    for txt in ["Ingresar", "Acceder", "Entrar", "Iniciar sesión", "Iniciar sesion", "Login", "Sign in"]:
+        try:
+            page.get_by_role("button", name=txt, exact=False).click(timeout=2000)
+            clicked = True
+            break
+        except:
+            try:
+                page.get_by_text(txt, exact=False).first.click(timeout=2000)
+                clicked = True
+                break
+            except:
+                continue
+
+    # 5) Espera a que complete el login (o al menos navegar)
+    try:
+        page.wait_for_load_state("networkidle", timeout=15000)
+    except:
+        page.wait_for_timeout(1000)
+
+    # 6) Captura para ver en qué quedó (carpeta screenshots/)
+    try:
+        page.screenshot(path=os.path.join(SS_DIR, f"login_state_{_now_tag()}.png"), full_page=True)
+    except:
+        pass
+
+    # 7) Pausa breve para que lo veas en PRUEBA VISUAL
+    page.wait_for_timeout(1200)
+
 
 # ----------- Crear en AV (gancho para PRUEBA VISUAL / PROD) -----------
 def create_in_av(page, row: Dict[str, Any], save: bool = True, screenshot_path: str = "") -> Tuple[bool, str, str]:
