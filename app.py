@@ -121,10 +121,11 @@ if archivo is not None:
         st.success("✅ Listo para el siguiente paso (ejecución).")
 
 st.divider()
-st.subheader()
+st.subheader("3) ¿Qué sigue?")
 st.markdown(
 
 )
+
 # ===== 2.1) Aplicar FECHAS GLOBALES (opcional) =====
 st.subheader("2.1) Aplicar fechas globales (opcional)")
 
@@ -206,6 +207,7 @@ if archivo is not None and aplicar:
 
     # (Opcional) Dejarlo en memoria para ejecutar de frente sin volver a subir
     st.session_state["df_para_ejecucion"] = df_adj
+
 
 # ========================
 # 3) Ejecutar (prueba/producción)
