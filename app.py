@@ -121,10 +121,113 @@ if archivo is not None:
         st.success("✅ Listo para el siguiente paso (ejecución).")
 
 st.divider()
-st.subheader("3) ¿Qué sigue?")
+st.subheader()
 st.markdown(
-"""
-**Paso 2** (cuando confirmes): integramos el botón **Ejecutar** con **MODO PRUEBA/PRODUCCIÓN**,  
-credenciales por **variables de entorno** y generación de **reporte** (CSV) por fila.
-"""
+
 )
+# ===== 2.1) Aplicar FECHAS GLOBALES (opcional) =====
+st.subheader("2.1) Aplicar fechas globales (opcional)")
+
+colf1, colf2 = st.columns(2)
+fecha_inicio_global = colf1.date_input("Fecha de INICIO (global)")
+fecha_fin_global    = colf2.date_input("Fecha de FIN (global)", value=fecha_inicio_global)
+
+aplicar = st.button("📌 Aplicar fechas globales a INICIO y FIN y preparar descarga")
+
+def _a_dt(x):
+    try:
+        v = pd.to_datetime(x)
+        if pd.isna(v): return None
+        return pd.to_datetime(v).to_pydatetime()
+    except Exception:
+        return None
+
+def _combina_fecha(fecha, x_datetime):
+    """Reemplaza solo la FECHA, conserva la HORA."""
+    if x_datetime is None:
+        return None
+    return datetime.combine(fecha, x_datetime.time())
+
+def _duracion_min(inicio, fin):
+    if not inicio or not fin:
+        return None
+    delta = (fin - inicio).total_seconds()/60
+    if delta < 0:
+        delta += 24*60
+    return int(round(delta))
+
+if archivo is not None and aplicar:
+    # Trabajar sobre el df original subido (df)
+    df_adj = df.copy()
+    df_adj.columns = [c.upper().strip() for c in df_adj.columns]
+
+    # Parse a datetime para poder separar hora
+    ini_dt = df_adj["INICIO"].apply(_a_dt)
+    fin_dt = df_adj["FIN"].apply(_a_dt)
+
+    # Reemplazar solo la fecha con las fechas globales elegidas
+    df_adj["INICIO"] = [ _combina_fecha(fecha_inicio_global, v) for v in ini_dt ]
+    df_adj["FIN"]    = [ _combina_fecha(fecha_fin_global,    v) for v in fin_dt ]
+
+    # (Opcional) recalcular DURACION si está vacía o no numérica
+    def _dur_out(row):
+        val = row.get("DURACION")
+        try:
+            if pd.isna(val) or str(val).strip() == "":
+                return _duracion_min(row["INICIO"], row["FIN"])
+            return int(val)
+        except Exception:
+            return _duracion_min(row["INICIO"], row["FIN"])
+
+    df_adj["DURACION"] = df_adj.apply(_dur_out, axis=1)
+
+    st.success("Fechas aplicadas. Vista previa (primeras 20 filas):")
+    st.dataframe(df_adj.head(20), use_container_width=True)
+
+    # Descargar Excel “con fechas”
+    import io
+    buf_out = io.BytesIO()
+    with pd.ExcelWriter(
+        buf_out,
+        engine="openpyxl",
+        date_format="yyyy-mm-dd hh:mm",
+        datetime_format="yyyy-mm-dd hh:mm"
+    ) as w:
+        # Usa el mismo nombre de hoja que tu archivo original, o 'Hoja1' si no es determinable
+        sheet_name = "Hoja1" if "Hoja1" in locals() else "Hoja1"
+        df_adj.to_excel(w, index=False, sheet_name=sheet_name)
+
+    st.download_button(
+        "💾 Descargar Excel con fechas aplicadas",
+        data=buf_out.getvalue(),
+        file_name="videoconferencias_con_fechas.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+    # (Opcional) Dejarlo en memoria para ejecutar de frente sin volver a subir
+    st.session_state["df_para_ejecucion"] = df_adj
+
+# ========================
+# 3) Ejecutar (prueba/producción)
+# ========================
+st.subheader("3) Ejecutar lote")
+
+col1, col2, col3 = st.columns([1,1,2], vertical_alignment="center")
+with col1:
+    modo = st.selectbox("Modo", ["PRUEBA", "PRODUCCIÓN"], index=0)
+with col2:
+    headless = st.checkbox("Headless (oculto)", value=True, help="Solo afecta en PRODUCCIÓN")
+
+if archivo is not None:
+    ejecutar = st.button("🚀 Ejecutar ahora")
+    if ejecutar:
+        from runner_av import run_batch
+        # reutilizamos el df ya cargado arriba:
+        resumen = run_batch(df, modo_prueba=(modo=="PRUEBA"), headless=headless)
+
+        st.success(f"✅ Lote terminado • Total: {resumen['total']} • OK: {resumen['ok']} • Fallas: {resumen['fail']}")
+        st.write(f"📄 Log TXT: {resumen['log_txt']}")
+        st.write(f"📊 Log CSV: {resumen['log_csv']}")
+        st.caption("Los archivos se guardan en la carpeta 'logs/'. En producción, si ocurre un error por fila, se guarda una captura en 'screenshots/'.")
+else:
+    st.info("Sube primero tu Excel para habilitar la ejecución.")
