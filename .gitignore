@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+
+# Entornos
+.venv/
+env/
+venv/
+
+# SO/IDE
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Streamlit local
+.streamlit/
+
+# Datos y secretos
+*.xlsx
+*.csv
+.env
+logs/
+screenshots/
