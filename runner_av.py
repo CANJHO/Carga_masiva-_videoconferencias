@@ -32,7 +32,7 @@ from playwright.sync_api import sync_playwright
 load_dotenv()
 
 
-AV_VC_URL= os.getenv("AV_VC_URL","https://aulavirtual2.autonomadeica.edu.pe/web/conference/videoconferencias")
+AV_VC_URL= os.getenv("AV_URL","https://aulavirtual2.autonomadeica.edu.pe/web/conference/videoconferencias")
 AV_USER  = os.getenv("AV_USER",  "")
 AV_PASS  = os.getenv("AV_PASS",  "")
 TZ       = os.getenv("TZ",       "America/Lima")
