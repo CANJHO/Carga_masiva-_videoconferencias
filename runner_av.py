@@ -1,10 +1,10 @@
 # runner_av.py
-# Motor Playwright llamado desde Streamlit (app.py)
-# - MODOS:
-#   * "PRUEBA VISUAL (navegador, sin guardar)"  -> selecciona Aula, clic en Agregar, llena modal, NO guarda
-#   * "PRODUCCIÓN"                               -> llena y guarda
+# Motor Playwright para la carga masiva desde Streamlit (app.py)
+# MODOS:
+#   - "PRUEBA VISUAL (navegador, sin guardar)"  -> selecciona Aula, abre modal, llena, NO guarda
+#   - "PRODUCCIÓN"                               -> llena y guarda
 #
-# .env:
+# Variables .env requeridas:
 #   AV_URL=https://aulavirtual2.autonomadeica.edu.pe/login?ReturnUrl=%2F
 #   AV_VC_URL=https://aulavirtual2.autonomadeica.edu.pe/web/conference/videoconferencias
 #   AV_USER=Superadmin
@@ -19,7 +19,7 @@ from typing import Dict, Any, List, Tuple
 import pandas as pd
 from dotenv import load_dotenv
 
-# ===== FIX Windows loop =====
+# ===== Event loop (Windows/Streamlit) =====
 import sys, asyncio
 if sys.platform.startswith("win"):
     try:
@@ -31,18 +31,28 @@ from playwright.sync_api import sync_playwright
 
 load_dotenv()
 
-
-AV_VC_URL= os.getenv("AV_URL","https://aulavirtual2.autonomadeica.edu.pe/web/conference/videoconferencias")
-AV_USER  = os.getenv("AV_USER",  "")
-AV_PASS  = os.getenv("AV_PASS",  "")
-TZ       = os.getenv("TZ",       "America/Lima")
+AV_URL    = os.getenv("AV_URL",    "https://aulavirtual2.autonomadeica.edu.pe/login?ReturnUrl=%2F")
+AV_VC_URL = os.getenv("AV_VC_URL", "https://aulavirtual2.autonomadeica.edu.pe/web/conference/videoconferencias")
+AV_USER   = os.getenv("AV_USER",   "")
+AV_PASS   = os.getenv("AV_PASS",   "")
+TZ        = os.getenv("TZ",        "America/Lima")
 
 LOG_DIR = "logs"
 SS_DIR  = "screenshots"
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(SS_DIR,  exist_ok=True)
 
-# ---------------- Utils ----------------
+# ---------- Tiempos (ajustables) ----------
+# Pensados para verse fluido como el script original sin “dormirse”
+SLOW_MO_VISUAL         = 180   # ms entre acciones en PRUEBA VISUAL (antes solían usar 200-400)
+DEFAULT_TIMEOUT        = 6000  # 6s por acción
+NAV_TIMEOUT            = 15000 # 15s para navegaciones/recargas
+SELECT2_SEARCH_DELAY   = 12    # ms entre teclas en buscador select2
+AFTER_SELECT_PAUSE_MS  = 180   # pausa breve tras seleccionar opción
+AFTER_OPEN_MODAL_MS    = 250   # pausa breve tras abrir modal
+
+# -----------------------------------------
+
 def _now_tag() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -51,7 +61,7 @@ def _duracion_min(inicio_dt, fin_dt) -> int:
         return None
     delta = (pd.to_datetime(fin_dt) - pd.to_datetime(inicio_dt)).total_seconds() / 60
     if delta < 0:
-        delta += 24*60
+        delta += 24 * 60
     return int(round(delta))
 
 def _prep_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -65,7 +75,7 @@ def _prep_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         raise RuntimeError("Faltan columnas obligatorias: " + ", ".join(faltan))
 
     t["_INICIO_DT"] = pd.to_datetime(t["INICIO"], errors="coerce")
-    t["_FIN_DT"]    = pd.to_datetime(t["FIN"], errors="coerce")
+    t["_FIN_DT"]    = pd.to_datetime(t["FIN"],    errors="coerce")
 
     def _dur(row):
         v = row.get("DURACION")
@@ -104,9 +114,8 @@ def _write_logs(base_name: str, rows: List[Dict[str, Any]]) -> Tuple[str, str]:
 # ---------------- Login ----------------
 def _login(page):
     page.goto(AV_URL, wait_until="domcontentloaded")
-    page.wait_for_timeout(300)
+    page.wait_for_timeout(250)
 
-    # Campos login
     user_loc = page.locator(
         "input[ng-model='username'], input[placeholder='USUARIO'], input[name='username']"
     ).first
@@ -114,18 +123,18 @@ def _login(page):
         "input[type='password'], input[placeholder='CONTRASEÑA'], input[name='password']"
     ).first
 
-    user_loc.wait_for(state="visible", timeout=10000)
-    pass_loc.wait_for(state="visible", timeout=10000)
+    user_loc.wait_for(state="visible", timeout=DEFAULT_TIMEOUT)
+    pass_loc.wait_for(state="visible", timeout=DEFAULT_TIMEOUT)
 
-    # Usuario
+    # Usuario (type visible)
     user_loc.fill("")
     try:
-        user_loc.type(AV_USER, delay=30)
+        user_loc.type(AV_USER, delay=28)
     except:
         user_loc.click()
         page.keyboard.insert_text(AV_USER)
 
-    # Contraseña EXACTA por JS (evita mayúscula inicial / autocapitalize)
+    # Contraseña EXACTA por JS (evita autocapitalize/mayúscula primera)
     pass_loc.evaluate(
         """(el, v) => {
             try { el.setAttribute('type','password'); } catch(e){}
@@ -141,16 +150,16 @@ def _login(page):
         AV_PASS
     )
 
-    # Botón INGRESAR
+    # Botón ingresar
     clicked = False
-    for txt in ["INGRESAR","Ingresar","Entrar","Acceder","Iniciar sesión","Login"]:
+    for txt in ["INGRESAR","Ingresar","Acceder","Entrar","Iniciar sesión","Login"]:
         try:
-            page.get_by_role("button", name=txt, exact=False).click(timeout=1500)
+            page.get_by_role("button", name=txt, exact=False).click(timeout=1200)
             clicked = True
             break
         except:
             try:
-                page.locator(f"button:has-text('{txt}')").first.click(timeout=1500)
+                page.locator(f"button:has-text('{txt}')").first.click(timeout=1200)
                 clicked = True
                 break
             except:
@@ -162,83 +171,53 @@ def _login(page):
             pass
 
     try:
-        page.wait_for_load_state("networkidle", timeout=15000)
+        page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT)
     except:
-        page.wait_for_timeout(800)
+        page.wait_for_timeout(500)
 
-    # Ir al módulo de videoconferencias (la página de tu captura)
+    # Ir a Videoconferencias
     try:
         page.goto(AV_VC_URL, wait_until="domcontentloaded")
-        page.wait_for_load_state("networkidle", timeout=10000)
+        page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT)
     except:
         pass
 
-# ---------------- Helpers página lista (Aula + Agregar) ----------------
+# ---------- Helpers página lista (Aula + Agregar) ----------
 def _select_aula(page, correo: str) -> bool:
     """
-    Selecciona el 'Aula' (combo superior). Busca por label/aria/placeholder
-    y soporta select2/combobox. Usa el CORREO como valor a buscar.
+    Selecciona el combo 'Aula' (select2 o select nativo) usando el CORREO.
     """
     correo = (correo or "").strip()
     if not correo:
         return False
 
-    # 1) select clásico asociado a label 'Aula'
+    # Ruta principal: select2 al lado de label 'Aula'
     try:
-        page.get_by_label("Aula", exact=False).select_option(label=correo)
-        page.wait_for_timeout(150)
-        return True
-    except:
-        pass
-
-    # 2) combobox por aria/placeholder
-    for sel in [
-        "[role='combobox'][aria-label*='Aula' i]",
-        "input[aria-label*='Aula' i]",
-        "input[placeholder*='Aula' i]",
-    ]:
-        try:
-            box = page.locator(sel).first
-            box.click(timeout=800)
-            page.keyboard.type(correo, delay=15)
-            page.wait_for_timeout(150)
-            page.keyboard.press("Enter")
-            page.wait_for_timeout(150)
-            return True
-        except:
-            continue
-
-    # 3) select2 cercano a label 'Aula'
-    try:
-        cb = page.locator(
-            "xpath=//label[contains(translate(.,'a','A'),'AULA')]/following::*"
-            "[self::span[contains(@class,'select2-selection')] or self::input or self::select][1]"
+        container = page.locator(
+            "xpath=//label[contains(translate(.,'a','A'),'AULA')]"
+            "/following::span[contains(@class,'select2-selection--single')][1]"
         ).first
-        cb.click(timeout=800)
-        page.keyboard.type(correo, delay=15)
-        page.wait_for_timeout(150)
-        page.keyboard.press("Enter")
-        page.wait_for_timeout(150)
-        return True
-    except:
-        pass
+        container.click(timeout=1500)
 
-    # 4) último intento: primer combobox visible
-    try:
-        cb = page.locator("[role='combobox'], .select2-selection, select").first
-        cb.click(timeout=800)
-        page.keyboard.type(correo, delay=15)
-        page.wait_for_timeout(150)
-        page.keyboard.press("Enter")
-        page.wait_for_timeout(150)
+        search = page.locator("input.select2-search__field").first
+        search.fill("")
+        search.type(correo, delay=SELECT2_SEARCH_DELAY)
+
+        option = page.locator(".select2-results__option", has_text=correo).first
+        option.click(timeout=1500)
+
+        page.wait_for_timeout(AFTER_SELECT_PAUSE_MS)
         return True
-    except:
-        return False
+    except Exception:
+        # Fallback: select nativo asociado a label Aula
+        try:
+            page.get_by_label("Aula", exact=False).select_option(label=correo)
+            page.wait_for_timeout(AFTER_SELECT_PAUSE_MS)
+            return True
+        except Exception:
+            return False
 
 def _click_agregar(page) -> bool:
-    """
-    Clic en el botón 'Agregar' de la lista de Videoconferencias.
-    """
     for sel in [
         "button:has-text('Agregar')",
         "button:has-text('AGREGAR')",
@@ -250,24 +229,22 @@ def _click_agregar(page) -> bool:
         except:
             continue
     try:
-        page.locator("button:has(svg)").filter(has_text="").first.click(timeout=1000)
+        page.locator("button:has(svg)").filter(has_text="").first.click(timeout=1200)
         return True
     except:
         return False
 
 def _wait_modal(page):
-    """
-    Espera que aparezca un modal/form para crear la videoconferencia.
-    """
     for sel in [".modal.show", ".modal-dialog", "form", "[role='dialog']"]:
         try:
-            page.locator(sel).first.wait_for(state="visible", timeout=4000)
+            page.locator(sel).first.wait_for(state="visible", timeout=DEFAULT_TIMEOUT)
+            page.wait_for_timeout(AFTER_OPEN_MODAL_MS)
             return
         except:
             continue
-    page.wait_for_timeout(400)
+    page.wait_for_timeout(220)
 
-# ---------------- Helpers del formulario (modal) ----------------
+# ---------- Helpers del formulario (modal) ----------
 def _safe_fill(page, label_text: str, value: Any):
     if value is None or str(value).strip() == "":
         return
@@ -290,8 +267,8 @@ def _select2_like(page, root_sel: str, value: str) -> bool:
     try:
         root = page.locator(root_sel).first
         root.click(timeout=800)
-        page.keyboard.type(value, delay=20)
-        page.wait_for_timeout(150)
+        page.keyboard.type(value, delay=SELECT2_SEARCH_DELAY)
+        page.wait_for_timeout(120)
         page.keyboard.press("Enter")
         return True
     except:
@@ -301,17 +278,20 @@ def _safe_select(page, label_text: str, value: Any):
     if value is None or str(value).strip() == "":
         return
     value = str(value)
+    # select clásico por label
     try:
         page.get_by_label(label_text, exact=False).select_option(label=value)
         return
     except:
         pass
+    # combobox/select2 por aria/placeholder
     for sel in [
         f"[role='combobox'][aria-label*='{label_text}' i]",
         f"input[aria-label*='{label_text}' i]",
         f"input[placeholder*='{label_text}' i]",
     ]:
         if _select2_like(page, sel, value): return
+    # select2 cercano a label
     for sel in [
         f".select2:has(label:has-text('{label_text}'))",
         f"div:has(> label:has-text('{label_text}')) .select2-selection",
@@ -348,12 +328,12 @@ def _marcar_dias(page, dias_str: str):
                 pass
 
 def _llenar_formulario(page, row: Dict[str, Any]):
-    # Selects
-    _safe_select(page, "Periodo",  row.get("PERIODO", ""))
-    _safe_select(page, "Facultad", row.get("FACULTAD", ""))
-    _safe_select(page, "Escuela",  row.get("ESCUELA", ""))
-    _safe_select(page, "Curso",    row.get("CURSO", ""))
-    _safe_select(page, "Grupo",    row.get("GRUPO", ""))
+    # Selects (jerárquicos)
+    _safe_select(page, "Periodo",  row.get("PERIODO",""))
+    _safe_select(page, "Facultad", row.get("FACULTAD",""))
+    _safe_select(page, "Escuela",  row.get("ESCUELA",""))
+    _safe_select(page, "Curso",    row.get("CURSO",""))
+    _safe_select(page, "Grupo",    row.get("GRUPO",""))
 
     # Inputs básicos
     for (label, col) in [
@@ -363,7 +343,7 @@ def _llenar_formulario(page, row: Dict[str, Any]):
         ("Tema", "TEMA"),
         ("Título", "TEMA"),
     ]:
-        _safe_fill(page, label, row.get(col, ""))
+        _safe_fill(page, label, row.get(col,""))
 
     # Fechas / horas
     def fmt(dt):
@@ -375,12 +355,44 @@ def _llenar_formulario(page, row: Dict[str, Any]):
     _safe_fill(page, "Fin",    fmt(row.get("_FIN_DT")))
 
     # Duración
-    dur = row.get("DURACION_CALC", "") or row.get("DURACION", "")
-    for label in ["Duración", "Duracion", "Minutos"]:
+    dur = row.get("DURACION_CALC","") or row.get("DURACION","")
+    for label in ["Duración","Duracion","Minutos"]:
         _safe_fill(page, label, str(dur))
 
-    # Días (si el formulario lo usa)
-    _marcar_dias(page, row.get("DIAS", ""))
+    # Días
+    _marcar_dias(page, row.get("DIAS",""))
+
+# ---------- Limpieza / errores ----------
+def _cerrar_modal_forzado(page) -> bool:
+    """Intenta cerrar cualquier modal abierto para continuar con la siguiente fila."""
+    for sel in [
+        "button:has-text('Cerrar')",
+        "button:has-text('Cancelar')",
+        ".modal-header button.close",
+        ".modal.show button.close"
+    ]:
+        try:
+            page.locator(sel).first.click(timeout=400)
+            page.wait_for_timeout(120)
+            return True
+        except:
+            pass
+    try:
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(120)
+        return True
+    except:
+        return False
+
+def _sin_modal(page) -> bool:
+    """True si no hay modal visible."""
+    try:
+        page.locator(".modal.show, .modal-dialog, [role='dialog']").first.wait_for(
+            state="hidden", timeout=700
+        )
+        return True
+    except:
+        return False
 
 # ---------------- Runner principal ----------------
 def run_batch(df: pd.DataFrame, modo: str, headless: bool) -> Dict[str, Any]:
@@ -400,7 +412,7 @@ def run_batch(df: pd.DataFrame, modo: str, headless: bool) -> Dict[str, Any]:
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=(False if visual else headless),
-            slow_mo=400,
+            slow_mo=(SLOW_MO_VISUAL if visual else 0),
             args=["--start-maximized"]
         )
         context = browser.new_context(
@@ -408,7 +420,14 @@ def run_batch(df: pd.DataFrame, modo: str, headless: bool) -> Dict[str, Any]:
             locale="es-PE",
             timezone_id=TZ
         )
+        # timeouts por defecto coherentes
+        context.set_default_timeout(DEFAULT_TIMEOUT)
+        context.set_default_navigation_timeout(NAV_TIMEOUT)
+
         page = context.new_page()
+        page.set_default_timeout(DEFAULT_TIMEOUT)
+        page.set_default_navigation_timeout(NAV_TIMEOUT)
+
         try:
             _login(page)
 
@@ -420,25 +439,19 @@ def run_batch(df: pd.DataFrame, modo: str, headless: bool) -> Dict[str, Any]:
                 try:
                     # 0) Seleccionar AULA (combo superior con el correo)
                     aula_ok = _select_aula(page, correo)
-                    if not aula_ok:
-                        # no bloqueamos, pero dejamos constancia
-                        msg_aula = "No se pudo seleccionar Aula; se continúa."
-                    else:
-                        msg_aula = "Aula seleccionada."
+                    msg_aula = "Aula seleccionada." if aula_ok else "No se pudo seleccionar Aula."
 
                     # 1) Clic en Agregar
-                    ok_add = _click_agregar(page)
-                    if not ok_add:
+                    if not _click_agregar(page):
                         raise RuntimeError("No se pudo hacer clic en 'Agregar'.")
 
                     # 2) Esperar modal
                     _wait_modal(page)
-                    page.wait_for_timeout(300)
 
                     # 3) Llenar formulario
                     _llenar_formulario(page, fila)
 
-                    # 4) Captura (siempre)
+                    # 4) Captura
                     ss_path = os.path.join(
                         SS_DIR,
                         f"{'visual' if visual else 'prod'}_row{i+1}_{_now_tag()}.png"
@@ -464,10 +477,12 @@ def run_batch(df: pd.DataFrame, modo: str, headless: bool) -> Dict[str, Any]:
                                 except:
                                     continue
                         if not cerrado:
-                            try:
-                                page.locator("button.close, .modal-header button:has(svg), .modal-header button.close").first.click(timeout=800)
-                            except:
-                                pass
+                            _cerrar_modal_forzado(page)
+
+                        # garantizar pantalla limpia
+                        if not _sin_modal(page):
+                            _cerrar_modal_forzado(page)
+
                         status  = "SIMULADO_VISUAL"
                         mensaje = f"Formulario llenado (NO guardado). {msg_aula}"
                         meeting = ""
@@ -487,10 +502,15 @@ def run_batch(df: pd.DataFrame, modo: str, headless: bool) -> Dict[str, Any]:
                                 except:
                                     continue
                         if guardado:
+                            # cerrar sweetalert si aparece
                             try:
-                                page.locator(".swal-button--confirm, .swal2-confirm").first.click(timeout=20000)
+                                page.locator(".swal-button--confirm, .swal2-confirm").first.click(timeout=2000)
                             except:
                                 pass
+                        # limpiar modal si quedó
+                        if not _sin_modal(page):
+                            _cerrar_modal_forzado(page)
+
                         status  = "GUARDADO"
                         mensaje = f"Guardado. {msg_aula}"
                         meeting = ""
@@ -514,11 +534,14 @@ def run_batch(df: pd.DataFrame, modo: str, headless: bool) -> Dict[str, Any]:
                     })
 
                 except Exception as e:
+                    # Captura y limpieza antes de pasar a la siguiente fila
                     err_ss = os.path.join(SS_DIR, f"error_row{i+1}_{_now_tag()}.png")
                     try:
                         page.screenshot(path=err_ss, full_page=True)
                     except:
                         pass
+                    _cerrar_modal_forzado(page)
+
                     resultados.append({
                         "timestamp": datetime.now().isoformat(timespec="seconds"),
                         "status": "ERROR",
@@ -530,7 +553,7 @@ def run_batch(df: pd.DataFrame, modo: str, headless: bool) -> Dict[str, Any]:
                         "curso": str(fila.get("CURSO","")),
                         "grupo": str(fila.get("GRUPO","")),
                         "inicio": str(fila.get("_INICIO_DT","")),
-                        "fin": str(fila.get("_INICIO_DT","")),
+                        "fin": str(fila.get("_FIN_DT","")),
                         "duracion": str(fila.get("DURACION_CALC","")),
                         "dias": str(fila.get("DIAS","")),
                         "mensaje": f"Excepción: {e}",
