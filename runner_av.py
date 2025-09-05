@@ -106,12 +106,12 @@ def _login(page):
 
     # 4) USERNAME: tecleo real
     user_loc.fill("")
-    user_loc.type(user, delay=40)
+    user_loc.type(AV_USER, delay=40)
 
     # 5) PASSWORD: tecleo real + fallback con insert_text
     pass_loc.fill("")
     try:
-        pass_loc.type(pwd, delay=40)
+        pass_loc.type(AV_PASS, delay=40)
     except:
         # Inserta el texto tal cual (ignora layout)
         pass_loc.click()
