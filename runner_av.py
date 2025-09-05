@@ -1,14 +1,14 @@
 # runner_av.py
 # Motor Playwright llamado desde Streamlit (app.py)
 # - MODOS:
-#   * "PRUEBA VISUAL (navegador, sin guardar)"  -> clic en Agregar, llena el modal, NO guarda
+#   * "PRUEBA VISUAL (navegador, sin guardar)"  -> selecciona Aula, clic en Agregar, llena modal, NO guarda
 #   * "PRODUCCIÓN"                               -> llena y guarda
 #
-# Requiere .env con:
+# .env:
 #   AV_URL=https://aulavirtual2.autonomadeica.edu.pe/login?ReturnUrl=%2F
 #   AV_VC_URL=https://aulavirtual2.autonomadeica.edu.pe/web/conference/videoconferencias
-#   AV_USER=superadmin
-#   AV_PASS=tu_password
+#   AV_USER=Superadmin
+#   AV_PASS=tju.uzq!pgu7XGU0xrm
 #   TZ=America/Lima
 
 import os
@@ -117,7 +117,7 @@ def _login(page):
     user_loc.wait_for(state="visible", timeout=10000)
     pass_loc.wait_for(state="visible", timeout=10000)
 
-    # Usuario normal (type)
+    # Usuario
     user_loc.fill("")
     try:
         user_loc.type(AV_USER, delay=30)
@@ -166,19 +166,79 @@ def _login(page):
     except:
         page.wait_for_timeout(800)
 
-    # Ir al módulo de videoconferencias (pantalla que muestras en la imagen)
+    # Ir al módulo de videoconferencias (la página de tu captura)
     try:
         page.goto(AV_VC_URL, wait_until="domcontentloaded")
         page.wait_for_load_state("networkidle", timeout=10000)
     except:
         pass
 
-# ---------------- Helpers de formulario ----------------
+# ---------------- Helpers página lista (Aula + Agregar) ----------------
+def _select_aula(page, correo: str) -> bool:
+    """
+    Selecciona el 'Aula' (combo superior). Busca por label/aria/placeholder
+    y soporta select2/combobox. Usa el CORREO como valor a buscar.
+    """
+    correo = (correo or "").strip()
+    if not correo:
+        return False
+
+    # 1) select clásico asociado a label 'Aula'
+    try:
+        page.get_by_label("Aula", exact=False).select_option(label=correo)
+        page.wait_for_timeout(150)
+        return True
+    except:
+        pass
+
+    # 2) combobox por aria/placeholder
+    for sel in [
+        "[role='combobox'][aria-label*='Aula' i]",
+        "input[aria-label*='Aula' i]",
+        "input[placeholder*='Aula' i]",
+    ]:
+        try:
+            box = page.locator(sel).first
+            box.click(timeout=800)
+            page.keyboard.type(correo, delay=15)
+            page.wait_for_timeout(150)
+            page.keyboard.press("Enter")
+            page.wait_for_timeout(150)
+            return True
+        except:
+            continue
+
+    # 3) select2 cercano a label 'Aula'
+    try:
+        cb = page.locator(
+            "xpath=//label[contains(translate(.,'a','A'),'AULA')]/following::*"
+            "[self::span[contains(@class,'select2-selection')] or self::input or self::select][1]"
+        ).first
+        cb.click(timeout=800)
+        page.keyboard.type(correo, delay=15)
+        page.wait_for_timeout(150)
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(150)
+        return True
+    except:
+        pass
+
+    # 4) último intento: primer combobox visible
+    try:
+        cb = page.locator("[role='combobox'], .select2-selection, select").first
+        cb.click(timeout=800)
+        page.keyboard.type(correo, delay=15)
+        page.wait_for_timeout(150)
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(150)
+        return True
+    except:
+        return False
+
 def _click_agregar(page) -> bool:
     """
     Clic en el botón 'Agregar' de la lista de Videoconferencias.
     """
-    # botón con texto
     for sel in [
         "button:has-text('Agregar')",
         "button:has-text('AGREGAR')",
@@ -189,7 +249,6 @@ def _click_agregar(page) -> bool:
             return True
         except:
             continue
-    # ícono + con tooltip
     try:
         page.locator("button:has(svg)").filter(has_text="").first.click(timeout=1000)
         return True
@@ -200,7 +259,6 @@ def _wait_modal(page):
     """
     Espera que aparezca un modal/form para crear la videoconferencia.
     """
-    # suele ser modal bootstrap
     for sel in [".modal.show", ".modal-dialog", "form", "[role='dialog']"]:
         try:
             page.locator(sel).first.wait_for(state="visible", timeout=4000)
@@ -209,6 +267,7 @@ def _wait_modal(page):
             continue
     page.wait_for_timeout(400)
 
+# ---------------- Helpers del formulario (modal) ----------------
 def _safe_fill(page, label_text: str, value: Any):
     if value is None or str(value).strip() == "":
         return
@@ -228,9 +287,6 @@ def _safe_fill(page, label_text: str, value: Any):
             continue
 
 def _select2_like(page, root_sel: str, value: str) -> bool:
-    """
-    Para selects tipo select2/combobox: hace click, tipea y Enter.
-    """
     try:
         root = page.locator(root_sel).first
         root.click(timeout=800)
@@ -245,20 +301,17 @@ def _safe_select(page, label_text: str, value: Any):
     if value is None or str(value).strip() == "":
         return
     value = str(value)
-    # select clásico
     try:
         page.get_by_label(label_text, exact=False).select_option(label=value)
         return
     except:
         pass
-    # combobox por aria
     for sel in [
         f"[role='combobox'][aria-label*='{label_text}' i]",
         f"input[aria-label*='{label_text}' i]",
         f"input[placeholder*='{label_text}' i]",
     ]:
         if _select2_like(page, sel, value): return
-    # contenedores típicos de select2
     for sel in [
         f".select2:has(label:has-text('{label_text}'))",
         f"div:has(> label:has-text('{label_text}')) .select2-selection",
@@ -295,18 +348,14 @@ def _marcar_dias(page, dias_str: str):
                 pass
 
 def _llenar_formulario(page, row: Dict[str, Any]):
-    """
-    Llena el modal con los campos del AV.
-    Busca por label/placeholder/name y también soporta select2/combobox.
-    """
-    # Selecciones jerárquicas
+    # Selects
     _safe_select(page, "Periodo",  row.get("PERIODO", ""))
     _safe_select(page, "Facultad", row.get("FACULTAD", ""))
     _safe_select(page, "Escuela",  row.get("ESCUELA", ""))
     _safe_select(page, "Curso",    row.get("CURSO", ""))
     _safe_select(page, "Grupo",    row.get("GRUPO", ""))
 
-    # Inputs
+    # Inputs básicos
     for (label, col) in [
         ("Correo", "CORREO"),
         ("Usuario", "CORREO"),
@@ -330,7 +379,7 @@ def _llenar_formulario(page, row: Dict[str, Any]):
     for label in ["Duración", "Duracion", "Minutos"]:
         _safe_fill(page, label, str(dur))
 
-    # Días (si el formulario los pide)
+    # Días (si el formulario lo usa)
     _marcar_dias(page, row.get("DIAS", ""))
 
 # ---------------- Runner principal ----------------
@@ -369,6 +418,14 @@ def run_batch(df: pd.DataFrame, modo: str, headless: bool) -> Dict[str, Any]:
                 tema   = str(fila.get("TEMA",""))
 
                 try:
+                    # 0) Seleccionar AULA (combo superior con el correo)
+                    aula_ok = _select_aula(page, correo)
+                    if not aula_ok:
+                        # no bloqueamos, pero dejamos constancia
+                        msg_aula = "No se pudo seleccionar Aula; se continúa."
+                    else:
+                        msg_aula = "Aula seleccionada."
+
                     # 1) Clic en Agregar
                     ok_add = _click_agregar(page)
                     if not ok_add:
@@ -412,7 +469,7 @@ def run_batch(df: pd.DataFrame, modo: str, headless: bool) -> Dict[str, Any]:
                             except:
                                 pass
                         status  = "SIMULADO_VISUAL"
-                        mensaje = "Formulario llenado (NO guardado)."
+                        mensaje = f"Formulario llenado (NO guardado). {msg_aula}"
                         meeting = ""
                     else:
                         # Guardar
@@ -430,13 +487,12 @@ def run_batch(df: pd.DataFrame, modo: str, headless: bool) -> Dict[str, Any]:
                                 except:
                                     continue
                         if guardado:
-                            # si hay popup tipo SweetAlert
                             try:
                                 page.locator(".swal-button--confirm, .swal2-confirm").first.click(timeout=20000)
                             except:
                                 pass
                         status  = "GUARDADO"
-                        mensaje = "Guardado"
+                        mensaje = f"Guardado. {msg_aula}"
                         meeting = ""
 
                     resultados.append({
@@ -474,7 +530,7 @@ def run_batch(df: pd.DataFrame, modo: str, headless: bool) -> Dict[str, Any]:
                         "curso": str(fila.get("CURSO","")),
                         "grupo": str(fila.get("GRUPO","")),
                         "inicio": str(fila.get("_INICIO_DT","")),
-                        "fin": str(fila.get("_FIN_DT","")),
+                        "fin": str(fila.get("_INICIO_DT","")),
                         "duracion": str(fila.get("DURACION_CALC","")),
                         "dias": str(fila.get("DIAS","")),
                         "mensaje": f"Excepción: {e}",
