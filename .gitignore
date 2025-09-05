@@ -18,6 +18,6 @@ Thumbs.db
 # Datos y secretos
 *.xlsx
 *.csv
-.env
+# .env
 logs/
 screenshots/
