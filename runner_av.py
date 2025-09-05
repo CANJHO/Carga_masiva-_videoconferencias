@@ -81,19 +81,19 @@ def _write_logs(base_name: str, rows: List[Dict[str, Any]]) -> Tuple[str, str]:
 
     return txt_path, csv_path
 
-# ----------- LOGIN (robusto para tu HTML) -----------
+# ----------- LOGIN (usuario: tecleo; contraseña: valor exacto por JS) -----------
 def _login(page):
-    # 1) Ir al login
+    # 1) Navegar al login
     page.goto(AV_URL, wait_until="domcontentloaded")
     page.wait_for_timeout(300)
 
-    # 2) Credenciales SIN espacios/comillas
+    # 2) Credenciales limpias (sin espacios ni comillas)
     user = (AV_USER or "").strip()
     pwd  = (AV_PASS or "").strip()
     if not user or not pwd:
-        raise RuntimeError("AV_USER o AV_PASS vacíos. Revisa tu .env (sin comillas y sin espacios).")
+        raise RuntimeError("AV_USER o AV_PASS vacíos. Revisa tu .env (sin comillas ni espacios).")
 
-    # 3) Selectores de tu UI (Angular)
+    # 3) Localizadores según tu HTML
     user_loc = page.locator(
         "input[ng-model='username'], input[placeholder='USUARIO'], input[name='username']"
     ).first
@@ -104,22 +104,38 @@ def _login(page):
     user_loc.wait_for(state="visible", timeout=7000)
     pass_loc.wait_for(state="visible", timeout=7000)
 
-    # 4) Tecleo real + fallback (por si el framework requiere eventos)
+    # 4) Usuario: tecleo real para disparar eventos
     user_loc.fill("")
-    user_loc.type(user, delay=40)
-
-    pass_loc.fill("")
     try:
-        pass_loc.type(pwd, delay=40)
+        user_loc.type(user, delay=40)
     except:
-        pass_loc.click()
-        page.keyboard.insert_text(pwd)
+        user_loc.click()
+        page.keyboard.insert_text(user)
 
-    # Blur para que el framework registre el último valor
-    page.keyboard.press("Tab")
-    page.wait_for_timeout(150)
+    # 5) Contraseña: NO tecleamos. Forzamos valor EXACTO por JS, sin autocap/autocorrect
+    pass_loc.evaluate(
+        """(el, v) => {
+            try { el.setAttribute('type','password'); } catch(e){}
+            try { el.setAttribute('autocapitalize','off'); } catch(e){}
+            try { el.setAttribute('autocorrect','off'); } catch(e){}
+            try { el.setAttribute('autocomplete','off'); } catch(e){}
+            try { el.setAttribute('spellcheck','false'); } catch(e){}
+            try { el.style.textTransform = 'none'; } catch(e){}
+            el.value = v;
+            el.dispatchEvent(new Event('input',  { bubbles:true }));
+            el.dispatchEvent(new Event('change', { bubbles:true }));
+        }""",
+        pwd
+    )
 
-    # 5) Click en INGRESAR (varias variantes)
+    # Debug seguro: confirmar que quedó EXACTAMENTE
+    try:
+        pv = pass_loc.evaluate("el => el.value")
+        print(f"[debug] user_len={len(user)} pwd_equal={pv == %r} pwd_len={len(pv)}" % pwd)
+    except:
+        print("[debug] no se pudo leer el contenido del input password")
+
+    # 6) Click en INGRESAR
     clicked = False
     for txt in ["INGRESAR", "Ingresar", "Acceder", "Entrar", "Iniciar sesión", "Iniciar sesion", "Login", "Sign in"]:
         try:
@@ -134,26 +150,18 @@ def _login(page):
             except:
                 continue
     if not clicked:
-        # último recurso: Enter desde el campo password
         try:
             pass_loc.press("Enter")
         except:
             pass
 
-    # 6) Espera navegación / mensaje
+    # 7) Esperar navegación / mensaje
     try:
         page.wait_for_load_state("networkidle", timeout=15000)
     except:
         page.wait_for_timeout(800)
 
-    # 7) Depuración segura
-    try:
-        typed = pass_loc.input_value()
-        print(f"[debug] user_len={len(user)} pwd_len_in_field={len(typed) if typed is not None else 'n/a'} contains_bang={('!' in typed) if typed else 'n/a'}")
-    except:
-        print("[debug] no se pudo leer el contenido del input password (normal en algunos sitios)")
-
-    # 8) Captura del estado
+    # Captura del estado
     try:
         page.screenshot(path=os.path.join(SS_DIR, f"login_state_{_now_tag()}.png"), full_page=True)
     except:
@@ -176,7 +184,7 @@ def create_in_av(page, row: Dict[str, Any], save: bool = True, screenshot_path: 
         except:
             return ""
 
-    # 1) Abrir "Nueva videoconferencia" por texto (ajusta si tu botón tiene otro texto)
+    # 1) Abrir "Nueva videoconferencia" (ajusta el texto si es distinto)
     for txt in ["Nueva videoconferencia", "Nueva Videoconferencia", "Nueva conferencia", "Crear videoconferencia"]:
         try:
             page.get_by_text(txt, exact=False).first.click(timeout=1500)
@@ -240,7 +248,7 @@ def create_in_av(page, row: Dict[str, Any], save: bool = True, screenshot_path: 
     safe_fill("Duración", str(dur))
     safe_fill("Duracion", str(dur))  # por si no hay tilde
 
-    # 5) Días (si hay checkboxes con el nombre del día)
+    # 5) Días
     try:
         dias = str(row.get("DIAS", "")).split(",")
         for d in dias:
@@ -269,7 +277,7 @@ def create_in_av(page, row: Dict[str, Any], save: bool = True, screenshot_path: 
         page.wait_for_timeout(1200)
         return True, "Simulación visual: formulario rellenado (no se guardó).", ""
 
-    # Guardar (PRODUCCIÓN)
+    # Guardar
     for txt in ["Guardar", "Crear", "Crear videoconferencia", "Save"]:
         try:
             page.get_by_role("button", name=txt, exact=False).click(timeout=1500)
@@ -332,7 +340,6 @@ def run_batch(df: pd.DataFrame, modo: str, headless: bool) -> Dict[str, Any]:
 
     # ------- PRUEBA VISUAL / PRODUCCIÓN -------
     visual = modo.startswith("PRUEBA VISUAL")
-    # produccion = modo.startswith("PRODUCCIÓN")  # por si necesitas lógica distinta
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -399,7 +406,6 @@ def run_batch(df: pd.DataFrame, modo: str, headless: bool) -> Dict[str, Any]:
                         "mensaje": f"Excepción: {e}",
                         "meeting_url": ""
                     })
-            # mantener visible un instante en visual
             if visual:
                 page.wait_for_timeout(5000)
         finally:
