@@ -20,10 +20,11 @@ from playwright.sync_api import sync_playwright
 
 load_dotenv()
 
-AV_URL = os.getenv("AV_URL")
-AV_USER = os.getenv("AV_USER")
-AV_PASS = os.getenv("AV_PASS")
-TZ     = os.getenv("TZ", "America/Lima")
+AV_URL   = os.getenv("AV_URL")
+AV_USER  = os.getenv("AV_USER")
+AV_PASS  = os.getenv("AV_PASS")
+AV_VC_URL= os.getenv("AV_VC_URL", "").strip()  # opcional: URL directa a videoconferencias
+TZ       = os.getenv("TZ", "America/Lima")
 
 LOG_DIR = "logs"
 SS_DIR  = "screenshots"
@@ -81,19 +82,19 @@ def _write_logs(base_name: str, rows: List[Dict[str, Any]]) -> Tuple[str, str]:
 
     return txt_path, csv_path
 
-# ----------- LOGIN (usuario: tecleo; contraseña: valor exacto por JS) -----------
+# ----------- LOGIN (usuario tecleado; contraseña exacta por JS) -----------
 def _login(page):
     # 1) Navegar al login
     page.goto(AV_URL, wait_until="domcontentloaded")
     page.wait_for_timeout(300)
 
-    # 2) Credenciales limpias (sin espacios ni comillas)
+    # 2) Credenciales limpias
     user = (AV_USER or "").strip()
     pwd  = (AV_PASS or "").strip()
     if not user or not pwd:
-        raise RuntimeError("AV_USER o AV_PASS vacíos. Revisa tu .env (sin comillas ni espacios).")
+        raise RuntimeError("AV_URL/AV_USER/AV_PASS faltan. Revisa tu .env (sin comillas ni espacios).")
 
-    # 3) Localizadores según tu HTML
+    # 3) Localizadores
     user_loc = page.locator(
         "input[ng-model='username'], input[placeholder='USUARIO'], input[name='username']"
     ).first
@@ -104,7 +105,7 @@ def _login(page):
     user_loc.wait_for(state="visible", timeout=7000)
     pass_loc.wait_for(state="visible", timeout=7000)
 
-    # 4) Usuario: tecleo real para disparar eventos
+    # 4) Usuario: tecleo real
     user_loc.fill("")
     try:
         user_loc.type(user, delay=40)
@@ -112,7 +113,7 @@ def _login(page):
         user_loc.click()
         page.keyboard.insert_text(user)
 
-    # 5) Contraseña: NO tecleamos. Forzamos valor EXACTO por JS, sin autocap/autocorrect
+    # 5) Contraseña: NO teclear; fijar valor exacto por JS (evita mayúsculas automáticas)
     pass_loc.evaluate(
         """(el, v) => {
             try { el.setAttribute('type','password'); } catch(e){}
@@ -128,16 +129,15 @@ def _login(page):
         pwd
     )
 
-    # Debug seguro: confirmar que quedó EXACTAMENTE
+    # Debug seguro
     try:
-     pv = pass_loc.evaluate("el => el.value")
-     eq = (pv == pwd)  # ¿lo que quedó en el input es EXACTAMENTE la clave?
-     print(f"[debug] user_len={len(user)} pwd_equal={eq} pwd_len={len(pv)}")
+        pv = pass_loc.evaluate("el => el.value")
+        eq = (pv == pwd)
+        print(f"[debug] user_len={len(user)} pwd_equal={eq} pwd_len={len(pv)}")
     except Exception as e:
-     print(f"[debug] no se pudo leer el input password: {e}")
+        print(f"[debug] no se pudo leer el input password: {e}")
 
-
-    # 6) Click en INGRESAR
+    # 6) Clic en INGRESAR
     clicked = False
     for txt in ["INGRESAR", "Ingresar", "Acceder", "Entrar", "Iniciar sesión", "Iniciar sesion", "Login", "Sign in"]:
         try:
@@ -169,16 +169,41 @@ def _login(page):
     except:
         pass
 
-    page.wait_for_timeout(600)
+    page.wait_for_timeout(400)
 
-# ----------- Crear en AV (PRUEBA VISUAL / PROD) -----------
+# -------------------------------------------------------------------
+# Ir a la pantalla de videoconferencias (después del login)
+# Usa AV_VC_URL si existe; si no, intenta por texto de menú.
+# -------------------------------------------------------------------
+def go_to_videoconferencias(page):
+    if AV_VC_URL:
+        try:
+            page.goto(AV_VC_URL, wait_until="domcontentloaded")
+            page.wait_for_load_state("networkidle", timeout=10000)
+            return
+        except:
+            pass
+    # Fallback por navegación con textos visibles
+    for txt in ["Videoconferencias", "Conferencias", "Zoom", "Reuniones"]:
+        try:
+            page.get_by_role("link", name=txt, exact=False).first.click(timeout=2000)
+            page.wait_for_load_state("networkidle", timeout=10000)
+            return
+        except:
+            try:
+                page.get_by_text(txt, exact=False).first.click(timeout=2000)
+                page.wait_for_load_state("networkidle", timeout=10000)
+                return
+            except:
+                continue
+    page.wait_for_timeout(400)
+
+# -------------------------------------------------------------------
+# Crear/Simular creación de videoconferencia
+# save=False => PRUEBA VISUAL (no guarda), save=True => PRODUCCIÓN (guarda)
+# row: PERIODO, FACULTAD, ESCUELA, CURSO, GRUPO, CORREO, TEMA, _INICIO_DT, _FIN_DT, DURACION_CALC, DIAS
+# -------------------------------------------------------------------
 def create_in_av(page, row: Dict[str, Any], save: bool = True, screenshot_path: str = "") -> Tuple[bool, str, str]:
-    """
-    Rellena el formulario de videoconferencia.
-    - save=False: solo deja el formulario lleno y toma captura (PRUEBA VISUAL)
-    - save=True : presiona Guardar (PRODUCCIÓN)
-    Devuelve (ok, mensaje, meeting_url)
-    """
     def fmt(dt):
         try:
             d = pd.to_datetime(dt)
@@ -186,17 +211,39 @@ def create_in_av(page, row: Dict[str, Any], save: bool = True, screenshot_path: 
         except:
             return ""
 
-    # 1) Abrir "Nueva videoconferencia" (ajusta el texto si es distinto)
-    for txt in ["Nueva videoconferencia", "Nueva Videoconferencia", "Nueva conferencia", "Crear videoconferencia"]:
+    # Ir al módulo
+    try:
+        go_to_videoconferencias(page)
+    except:
+        pass
+
+    # 1) Abrir formulario "Nueva videoconferencia"
+    abierto = False
+    for txt in [
+        "Nueva videoconferencia", "Nueva Videoconferencia",
+        "Nueva conferencia", "Crear videoconferencia",
+        "Agregar videoconferencia", "Nueva", "Crear"
+    ]:
         try:
-            page.get_by_text(txt, exact=False).first.click(timeout=1500)
+            page.get_by_role("button", name=txt, exact=False).first.click(timeout=1500)
+            abierto = True
             break
         except:
+            try:
+                page.get_by_text(txt, exact=False).first.click(timeout=1500)
+                abierto = True
+                break
+            except:
+                continue
+    if not abierto:
+        try:
+            page.locator("button:has(svg)").filter(has_text="").first.click(timeout=1500)
+            abierto = True
+        except:
             pass
-
     page.wait_for_timeout(600)
 
-    # Helpers para inputs/selects por label/placeholder/name
+    # Helpers de escritura
     def safe_fill(label_text: str, value: Any):
         if value is None or str(value).strip() == "":
             return
@@ -205,6 +252,7 @@ def create_in_av(page, row: Dict[str, Any], save: bool = True, screenshot_path: 
             lambda: page.get_by_label(label_text, exact=False).fill(value),
             lambda: page.locator(f"input[placeholder*='{label_text}' i]").first.fill(value),
             lambda: page.locator(f"input[name*='{label_text.lower()}']").first.fill(value),
+            lambda: page.locator(f"textarea[placeholder*='{label_text}' i]").first.fill(value),
         ]:
             try:
                 try_fn()
@@ -224,9 +272,12 @@ def create_in_av(page, row: Dict[str, Any], save: bool = True, screenshot_path: 
         for try_fn in [
             lambda: page.get_by_label(label_text, exact=False).fill(value),
             lambda: page.locator(f"[role='combobox'][aria-label*='{label_text}' i]").first.fill(value),
+            lambda: page.locator(f"input[aria-label*='{label_text}' i]").first.fill(value),
+            lambda: page.locator(f"input[placeholder*='{label_text}' i]").first.fill(value),
         ]:
             try:
                 try_fn()
+                page.wait_for_timeout(150)
                 page.keyboard.press("Enter")
                 return
             except:
@@ -243,61 +294,83 @@ def create_in_av(page, row: Dict[str, Any], save: bool = True, screenshot_path: 
     safe_fill("Correo", row.get("CORREO", ""))
     safe_fill("Tema",   row.get("TEMA", ""))
 
-    # 4) Fechas/horas/duración
-    safe_fill("Inicio",   fmt(row.get("_INICIO_DT")))
-    safe_fill("Fin",      fmt(row.get("_FIN_DT")))
-    dur = row.get("DURACION_CALC", "")
+    # 4) Fechas / horas / duración
+    safe_fill("Inicio", fmt(row.get("_INICIO_DT")))
+    safe_fill("Fin",    fmt(row.get("_FIN_DT")))
+    dur = row.get("DURACION_CALC", "") or row.get("DURACION", "")
     safe_fill("Duración", str(dur))
-    safe_fill("Duracion", str(dur))  # por si no hay tilde
+    safe_fill("Duracion", str(dur))  # por si no usan tilde
 
     # 5) Días
     try:
-        dias = str(row.get("DIAS", "")).split(",")
-        for d in dias:
-            d = d.strip()
-            if not d:
-                continue
-            try:
-                page.get_by_label(d, exact=False).check()
-            except:
+        dias_raw = str(row.get("DIAS", "")).strip()
+        if dias_raw:
+            dias = [d.strip() for d in dias_raw.replace("|", ",").split(",") if d.strip()]
+            DIA_MAP = {
+                "1":"LUNES","2":"MARTES","3":"MIÉRCOLES","4":"JUEVES","5":"VIERNES","6":"SÁBADO","7":"DOMINGO",
+                "LU":"LUNES","MA":"MARTES","MI":"MIÉRCOLES","JU":"JUEVES","VI":"VIERNES","SA":"SÁBADO","DO":"DOMINGO",
+                "LUNES":"LUNES","MARTES":"MARTES","MIERCOLES":"MIÉRCOLES","MIÉRCOLES":"MIÉRCOLES","JUEVES":"JUEVES",
+                "VIERNES":"VIERNES","SABADO":"SÁBADO","SÁBADO":"SÁBADO","DOMINGO":"DOMINGO",
+            }
+            for d in dias:
+                dd = DIA_MAP.get(d.upper(), d)
+                ok = False
                 try:
-                    page.get_by_text(d, exact=False).first.click()
+                    page.get_by_label(dd, exact=False).check()
+                    ok = True
                 except:
-                    pass
+                    try:
+                        page.get_by_text(dd, exact=False).first.click()
+                        ok = True
+                    except:
+                        pass
+                if not ok:
+                    try:
+                        page.locator(f"input[type='checkbox'][value*='{dd}' i]").first.check()
+                    except:
+                        pass
     except:
         pass
 
-    # Pausa + captura
-    page.wait_for_timeout(800)
+    # 6) Captura del estado
+    page.wait_for_timeout(600)
     if screenshot_path:
         try:
             page.screenshot(path=screenshot_path, full_page=True)
         except:
             pass
 
+    # 7) PRUEBA VISUAL: no guardamos
     if not save:
-        page.wait_for_timeout(1200)
+        page.wait_for_timeout(1000)
         return True, "Simulación visual: formulario rellenado (no se guardó).", ""
 
-    # Guardar
-    for txt in ["Guardar", "Crear", "Crear videoconferencia", "Save"]:
+    # 8) Guardar (PRODUCCIÓN)
+    for txt in ["Guardar", "Crear", "Crear videoconferencia", "Guardar cambios", "Save"]:
         try:
-            page.get_by_role("button", name=txt, exact=False).click(timeout=1500)
+            page.get_by_role("button", name=txt, exact=False).click(timeout=2000)
             break
         except:
             try:
-                page.get_by_text(txt, exact=False).first.click(timeout=1500)
+                page.get_by_text(txt, exact=False).first.click(timeout=2000)
                 break
             except:
                 pass
 
+    # 9) Leer mensaje / URL
     msg = ""
     try:
-        msg = page.locator(".swal-text,.swal2-html-container").first.inner_text(timeout=8000)
+        msg = page.locator(".swal-text,.swal2-html-container,.alert-success").first.inner_text(timeout=8000)
     except:
         pass
 
-    return True, msg or "Guardado", ""
+    meeting_url = ""
+    try:
+        meeting_url = page.locator("a[target='_blank']:has-text('http')").first.get_attribute("href")
+    except:
+        pass
+
+    return True, (msg or "Guardado"), (meeting_url or "")
 
 # ------------------- Batch runner con MODOS -------------------
 def run_batch(df: pd.DataFrame, modo: str, headless: bool) -> Dict[str, Any]:
