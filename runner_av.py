@@ -130,10 +130,12 @@ def _login(page):
 
     # Debug seguro: confirmar que quedó EXACTAMENTE
     try:
-        pv = pass_loc.evaluate("el => el.value")
-        print(f"[debug] user_len={len(user)} pwd_equal={pv == %r} pwd_len={len(pv)}" % pwd)
-    except:
-        print("[debug] no se pudo leer el contenido del input password")
+     pv = pass_loc.evaluate("el => el.value")
+     eq = (pv == pwd)  # ¿lo que quedó en el input es EXACTAMENTE la clave?
+     print(f"[debug] user_len={len(user)} pwd_equal={eq} pwd_len={len(pv)}")
+    except Exception as e:
+     print(f"[debug] no se pudo leer el input password: {e}")
+
 
     # 6) Click en INGRESAR
     clicked = False
