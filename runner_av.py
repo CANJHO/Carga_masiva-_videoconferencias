@@ -7,14 +7,14 @@ from typing import Dict, Any, List, Tuple
 import pandas as pd
 from dotenv import load_dotenv
 
-# ===== FIX para Windows / Streamlit: event loop correcto =====
+# ===== FIX Windows/Streamlit: event loop correcto =====
 import sys, asyncio
 if sys.platform.startswith("win"):
     try:
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
     except Exception:
         pass
-# ============================================================
+# =====================================================
 
 from playwright.sync_api import sync_playwright
 
@@ -81,19 +81,19 @@ def _write_logs(base_name: str, rows: List[Dict[str, Any]]) -> Tuple[str, str]:
 
     return txt_path, csv_path
 
-# ----------- Login (coloca aquí tus selectores reales) -----------
+# ----------- LOGIN (robusto para tu HTML) -----------
 def _login(page):
     # 1) Ir al login
     page.goto(AV_URL, wait_until="domcontentloaded")
     page.wait_for_timeout(300)
 
-    # 2) Credenciales limpias (sin espacios)
+    # 2) Credenciales SIN espacios/comillas
     user = (AV_USER or "").strip()
     pwd  = (AV_PASS or "").strip()
     if not user or not pwd:
         raise RuntimeError("AV_USER o AV_PASS vacíos. Revisa tu .env (sin comillas y sin espacios).")
 
-    # 3) Localizadores según tu HTML (Angular)
+    # 3) Selectores de tu UI (Angular)
     user_loc = page.locator(
         "input[ng-model='username'], input[placeholder='USUARIO'], input[name='username']"
     ).first
@@ -104,24 +104,22 @@ def _login(page):
     user_loc.wait_for(state="visible", timeout=7000)
     pass_loc.wait_for(state="visible", timeout=7000)
 
-    # 4) USERNAME: tecleo real
+    # 4) Tecleo real + fallback (por si el framework requiere eventos)
     user_loc.fill("")
-    user_loc.type(AV_USER, delay=40)
+    user_loc.type(user, delay=40)
 
-    # 5) PASSWORD: tecleo real + fallback con insert_text
     pass_loc.fill("")
     try:
-        pass_loc.type(AV_PASS, delay=40)
+        pass_loc.type(pwd, delay=40)
     except:
-        # Inserta el texto tal cual (ignora layout)
         pass_loc.click()
         page.keyboard.insert_text(pwd)
 
-    # Forzar blur para que el framework registre el último valor
+    # Blur para que el framework registre el último valor
     page.keyboard.press("Tab")
     page.wait_for_timeout(150)
 
-    # 6) Clic en INGRESAR (varias variantes)
+    # 5) Click en INGRESAR (varias variantes)
     clicked = False
     for txt in ["INGRESAR", "Ingresar", "Acceder", "Entrar", "Iniciar sesión", "Iniciar sesion", "Login", "Sign in"]:
         try:
@@ -136,23 +134,26 @@ def _login(page):
             except:
                 continue
     if not clicked:
-        # último recurso: Enter desde password
-        pass_loc.press("Enter")
+        # último recurso: Enter desde el campo password
+        try:
+            pass_loc.press("Enter")
+        except:
+            pass
 
-    # 7) Espera navegación / mensaje
+    # 6) Espera navegación / mensaje
     try:
         page.wait_for_load_state("networkidle", timeout=15000)
     except:
         page.wait_for_timeout(800)
 
-    # 8) Depuración segura: longitud y si termina en "!"
+    # 7) Depuración segura
     try:
-        pv = pass_loc.input_value()  # puede fallar en algunos sitios; si falla, ignoramos
-        print(f"[debug] user_len={len(user)} pwd_len={len(pv)} endswith_bang={pv.endswith('!') if pv is not None else 'n/a'}")
+        typed = pass_loc.input_value()
+        print(f"[debug] user_len={len(user)} pwd_len_in_field={len(typed) if typed is not None else 'n/a'} contains_bang={('!' in typed) if typed else 'n/a'}")
     except:
-        print(f"[debug] user_len={len(user)} pwd_len=? endswith_bang=? (no readable)")
+        print("[debug] no se pudo leer el contenido del input password (normal en algunos sitios)")
 
-    # Captura del estado (screenshots/)
+    # 8) Captura del estado
     try:
         page.screenshot(path=os.path.join(SS_DIR, f"login_state_{_now_tag()}.png"), full_page=True)
     except:
@@ -160,10 +161,7 @@ def _login(page):
 
     page.wait_for_timeout(600)
 
-
-
-
-# ----------- Crear en AV (gancho para PRUEBA VISUAL / PROD) -----------
+# ----------- Crear en AV (PRUEBA VISUAL / PROD) -----------
 def create_in_av(page, row: Dict[str, Any], save: bool = True, screenshot_path: str = "") -> Tuple[bool, str, str]:
     """
     Rellena el formulario de videoconferencia.
@@ -171,25 +169,96 @@ def create_in_av(page, row: Dict[str, Any], save: bool = True, screenshot_path: 
     - save=True : presiona Guardar (PRODUCCIÓN)
     Devuelve (ok, mensaje, meeting_url)
     """
+    def fmt(dt):
+        try:
+            d = pd.to_datetime(dt)
+            return d.strftime("%Y-%m-%d %H:%M")
+        except:
+            return ""
 
-    # Aquí va tu flujo real: abrir modal, seleccionar PERIODO/FACULTAD/ESCUELA/CURSO/GRUPO,
-    # completar CORREO/TEMA/INICIO/FIN/DURACION, marcar DIAS, etc.
-    # Ejemplos (coloca tus selectores):
-    #
-    # page.click("text='Nueva videoconferencia'")
-    # seleccionar(page, "selector-periodo", row["PERIODO"])
-    # seleccionar(page, "selector-facultad", row["FACULTAD"])
-    # seleccionar(page, "selector-escuela", row["ESCUELA"])
-    # seleccionar(page, "selector-curso", row["CURSO"])
-    # seleccionar(page, "selector-grupo", row["GRUPO"])
-    # page.fill("input[name='correo']", row["CORREO"])
-    # page.fill("input[name='tema']", row["TEMA"])
-    # page.fill("input[name='inicio']",  formatea(row["_INICIO_DT"]))
-    # page.fill("input[name='fin']",     formatea(row["_FIN_DT"]))
-    # page.fill("input[name='duracion']", str(row["DURACION_CALC"]))
-    # marcar_dias(page, row["DIAS"])
+    # 1) Abrir "Nueva videoconferencia" por texto (ajusta si tu botón tiene otro texto)
+    for txt in ["Nueva videoconferencia", "Nueva Videoconferencia", "Nueva conferencia", "Crear videoconferencia"]:
+        try:
+            page.get_by_text(txt, exact=False).first.click(timeout=1500)
+            break
+        except:
+            pass
 
-    # Captura del estado (sea visual o prod)
+    page.wait_for_timeout(600)
+
+    # Helpers para inputs/selects por label/placeholder/name
+    def safe_fill(label_text: str, value: Any):
+        if value is None or str(value).strip() == "":
+            return
+        value = str(value)
+        for try_fn in [
+            lambda: page.get_by_label(label_text, exact=False).fill(value),
+            lambda: page.locator(f"input[placeholder*='{label_text}' i]").first.fill(value),
+            lambda: page.locator(f"input[name*='{label_text.lower()}']").first.fill(value),
+        ]:
+            try:
+                try_fn()
+                return
+            except:
+                continue
+
+    def safe_select(label_text: str, value: Any):
+        if value is None or str(value).strip() == "":
+            return
+        value = str(value)
+        try:
+            page.get_by_label(label_text, exact=False).select_option(label=value)
+            return
+        except:
+            pass
+        for try_fn in [
+            lambda: page.get_by_label(label_text, exact=False).fill(value),
+            lambda: page.locator(f"[role='combobox'][aria-label*='{label_text}' i]").first.fill(value),
+        ]:
+            try:
+                try_fn()
+                page.keyboard.press("Enter")
+                return
+            except:
+                continue
+
+    # 2) Selecciones principales
+    safe_select("Periodo",  row.get("PERIODO", ""))
+    safe_select("Facultad", row.get("FACULTAD", ""))
+    safe_select("Escuela",  row.get("ESCUELA", ""))
+    safe_select("Curso",    row.get("CURSO", ""))
+    safe_select("Grupo",    row.get("GRUPO", ""))
+
+    # 3) Datos básicos
+    safe_fill("Correo", row.get("CORREO", ""))
+    safe_fill("Tema",   row.get("TEMA", ""))
+
+    # 4) Fechas/horas/duración
+    safe_fill("Inicio",   fmt(row.get("_INICIO_DT")))
+    safe_fill("Fin",      fmt(row.get("_FIN_DT")))
+    dur = row.get("DURACION_CALC", "")
+    safe_fill("Duración", str(dur))
+    safe_fill("Duracion", str(dur))  # por si no hay tilde
+
+    # 5) Días (si hay checkboxes con el nombre del día)
+    try:
+        dias = str(row.get("DIAS", "")).split(",")
+        for d in dias:
+            d = d.strip()
+            if not d:
+                continue
+            try:
+                page.get_by_label(d, exact=False).check()
+            except:
+                try:
+                    page.get_by_text(d, exact=False).first.click()
+                except:
+                    pass
+    except:
+        pass
+
+    # Pausa + captura
+    page.wait_for_timeout(800)
     if screenshot_path:
         try:
             page.screenshot(path=screenshot_path, full_page=True)
@@ -197,14 +266,28 @@ def create_in_av(page, row: Dict[str, Any], save: bool = True, screenshot_path: 
             pass
 
     if not save:
+        page.wait_for_timeout(1200)
         return True, "Simulación visual: formulario rellenado (no se guardó).", ""
 
-    # Guardar (completa con tu selector) y leer mensaje
-    # page.click("button:has-text('Guardar')")
-    # msg = page.locator(".swal-text,.swal2-html-container").inner_text()
-    msg = "Guardado (implementar lectura del mensaje)"
-    meeting_url = ""  # si tu UI la muestra, extrae aquí
-    return True, msg, meeting_url
+    # Guardar (PRODUCCIÓN)
+    for txt in ["Guardar", "Crear", "Crear videoconferencia", "Save"]:
+        try:
+            page.get_by_role("button", name=txt, exact=False).click(timeout=1500)
+            break
+        except:
+            try:
+                page.get_by_text(txt, exact=False).first.click(timeout=1500)
+                break
+            except:
+                pass
+
+    msg = ""
+    try:
+        msg = page.locator(".swal-text,.swal2-html-container").first.inner_text(timeout=8000)
+    except:
+        pass
+
+    return True, msg or "Guardado", ""
 
 # ------------------- Batch runner con MODOS -------------------
 def run_batch(df: pd.DataFrame, modo: str, headless: bool) -> Dict[str, Any]:
@@ -215,7 +298,7 @@ def run_batch(df: pd.DataFrame, modo: str, headless: bool) -> Dict[str, Any]:
       - "PRODUCCIÓN"
     """
     if not AV_URL or not AV_USER or not AV_PASS:
-        raise RuntimeError("Faltan variables de entorno AV_URL/AV_USER/AV_PASS en .env")
+        raise RuntimeError("Faltan AV_URL/AV_USER/AV_PASS en .env")
 
     t = _prep_dataframe(df)
 
@@ -247,18 +330,16 @@ def run_batch(df: pd.DataFrame, modo: str, headless: bool) -> Dict[str, Any]:
         return {"total": len(resultados), "ok": len(resultados), "fail": 0,
                 "log_txt": txt, "log_csv": csv}
 
-    # ------- PRUEBA VISUAL / PRODUCCIÓN (con navegador) -------
+    # ------- PRUEBA VISUAL / PRODUCCIÓN -------
     visual = modo.startswith("PRUEBA VISUAL")
-    produccion = modo.startswith("PRODUCCIÓN")
+    # produccion = modo.startswith("PRODUCCIÓN")  # por si necesitas lógica distinta
 
     with sync_playwright() as p:
-        # Abrimos con ventana visible, más lenta y maximizada (cuando headless=False)
         browser = p.chromium.launch(
             headless=headless,
-            slow_mo=400,                          # retrasa acciones para que las veas
-            args=["--start-maximized"]            # abre max
+            slow_mo=400,
+            args=["--start-maximized"]
         )
-        # no_viewport=True deja que la ventana use el tamaño del SO
         context = browser.new_context(
             no_viewport=True,
             locale="es-PE",
@@ -270,12 +351,11 @@ def run_batch(df: pd.DataFrame, modo: str, headless: bool) -> Dict[str, Any]:
 
             for i, r in t.iterrows():
                 try:
-                    ss_path = os.path.join(screenshots_dir,
-                        f"{'visual' if visual else 'prod'}_row{i+1}_{_now_tag()}.png")
+                    ss_path = os.path.join(screenshots_dir, f"{'visual' if visual else 'prod'}_row{i+1}_{_now_tag()}.png")
                     ok, msg, url = create_in_av(
                         page,
                         r.to_dict(),
-                        save=not visual,           # en visual NO guarda
+                        save=not visual,
                         screenshot_path=ss_path
                     )
                     status = "SIMULADO_VISUAL" if visual else ("GUARDADO" if ok else "ERROR")
@@ -319,6 +399,9 @@ def run_batch(df: pd.DataFrame, modo: str, headless: bool) -> Dict[str, Any]:
                         "mensaje": f"Excepción: {e}",
                         "meeting_url": ""
                     })
+            # mantener visible un instante en visual
+            if visual:
+                page.wait_for_timeout(5000)
         finally:
             try:
                 context.close()
