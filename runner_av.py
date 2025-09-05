@@ -85,15 +85,15 @@ def _write_logs(base_name: str, rows: List[Dict[str, Any]]) -> Tuple[str, str]:
 def _login(page):
     # 1) Ir al login
     page.goto(AV_URL, wait_until="domcontentloaded")
-    page.wait_for_timeout(400)
+    page.wait_for_timeout(300)
 
-    # 2) Cargar credenciales desde .env y TRIMEAR (remove espacios invisibles)
+    # 2) Credenciales limpias (sin espacios)
     user = (AV_USER or "").strip()
     pwd  = (AV_PASS or "").strip()
     if not user or not pwd:
-        raise RuntimeError("AV_USER o AV_PASS están vacíos o con espacios. Revisa tu .env (sin comillas).")
+        raise RuntimeError("AV_USER o AV_PASS vacíos. Revisa tu .env (sin comillas y sin espacios).")
 
-    # 3) Localizadores robustos (según tu HTML: ng-model y placeholders)
+    # 3) Localizadores según tu HTML (Angular)
     user_loc = page.locator(
         "input[ng-model='username'], input[placeholder='USUARIO'], input[name='username']"
     ).first
@@ -101,24 +101,29 @@ def _login(page):
         "input[type='password'], input[placeholder='CONTRASEÑA'], input[name='password']"
     ).first
 
-    # Asegura que son visibles
     user_loc.wait_for(state="visible", timeout=7000)
     pass_loc.wait_for(state="visible", timeout=7000)
 
-    # 4) Teclear "de verdad" para disparar todos los eventos
-    user_loc.fill("")                  # limpia
-    user_loc.type(user, delay=50)      # simula teclado
+    # 4) USERNAME: tecleo real
+    user_loc.fill("")
+    user_loc.type(user, delay=40)
 
+    # 5) PASSWORD: tecleo real + fallback con insert_text
     pass_loc.fill("")
-    pass_loc.type(pwd, delay=50)       # simula teclado
+    try:
+        pass_loc.type(pwd, delay=40)
+    except:
+        # Inserta el texto tal cual (ignora layout)
+        pass_loc.click()
+        page.keyboard.insert_text(pwd)
 
-    # (opcional) fuerza blur para que el framework procese el último valor
+    # Forzar blur para que el framework registre el último valor
     page.keyboard.press("Tab")
     page.wait_for_timeout(150)
 
-    # 5) Clic en INGRESAR (varias variantes)
+    # 6) Clic en INGRESAR (varias variantes)
     clicked = False
-    for txt in ["INGRESAR", "Ingresar", "Acceder", "Entrar", "Iniciar sesión", "Login", "Sign in"]:
+    for txt in ["INGRESAR", "Ingresar", "Acceder", "Entrar", "Iniciar sesión", "Iniciar sesion", "Login", "Sign in"]:
         try:
             page.get_by_role("button", name=txt, exact=False).click(timeout=1500)
             clicked = True
@@ -131,27 +136,30 @@ def _login(page):
             except:
                 continue
     if not clicked:
-        # último recurso
-        try:
-            page.locator("input[type='submit'][value='INGRESAR']").first.click(timeout=1500)
-        except:
-            pass
+        # último recurso: Enter desde password
+        pass_loc.press("Enter")
 
-    # 6) Espera navegación / mensaje
+    # 7) Espera navegación / mensaje
     try:
         page.wait_for_load_state("networkidle", timeout=15000)
     except:
         page.wait_for_timeout(800)
 
-    # 7) Depuración: captura y log de longitudes
+    # 8) Depuración segura: longitud y si termina en "!"
+    try:
+        pv = pass_loc.input_value()  # puede fallar en algunos sitios; si falla, ignoramos
+        print(f"[debug] user_len={len(user)} pwd_len={len(pv)} endswith_bang={pv.endswith('!') if pv is not None else 'n/a'}")
+    except:
+        print(f"[debug] user_len={len(user)} pwd_len=? endswith_bang=? (no readable)")
+
+    # Captura del estado (screenshots/)
     try:
         page.screenshot(path=os.path.join(SS_DIR, f"login_state_{_now_tag()}.png"), full_page=True)
     except:
         pass
-    print(f"[debug] user_len={len(user)} pwd_len={len(pwd)} (no se imprime la clave)")
 
-    # Pausa para verlo en PRUEBA VISUAL
-    page.wait_for_timeout(800)
+    page.wait_for_timeout(600)
+
 
 
 
