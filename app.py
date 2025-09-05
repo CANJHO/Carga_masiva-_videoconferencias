@@ -1,199 +1,475 @@
-# app.py
-import io
+# cargamasiva.py
+# ------------------------------------------------------------
+# Carga masiva de videoconferencias en el Aula Virtual (Zoom)
+# - Lee "videoconferencias.xlsx"
+# - Login con Playwright
+# - Entra al módulo de Videoconferencias
+# - Por cada fila: abre "Nueva videoconferencia", completa todo
+# - Si MODO_PRUEBA=True: NO guarda (simulación visual)
+# - Si MODO_PRUEBA=False: guarda y registra el mensaje
+# - Logs: logs/log_resultados.txt y logs/log_resultados.csv
+# - Capturas: screenshots/ (errores o prueba)
+# ------------------------------------------------------------
+
+import os
+import csv
 from datetime import datetime
+from typing import Any, Dict, List
+
 import pandas as pd
-import streamlit as st
+from dotenv import load_dotenv
 
-st.set_page_config(page_title="Carga masiva | Aula Virtual", layout="wide")
-st.title("📥 Carga masiva de videoconferencias (Aula Virtual)")
+from playwright.sync_api import sync_playwright
 
-# -----------------------
-# Definición de plantilla
-# -----------------------
-COLUMNAS_REQUERIDAS = [
-    "CORREO",   # host (cuenta en el AV)
-    "TEMA",     # título de la reunión
-    "PERIODO",  # ej. 20242
-    "FACULTAD",
-    "ESCUELA",
-    "CURSO",
-    "GRUPO",
-    "INICIO",   # ej. 2025-08-15 07:40 (hora local Lima)
-    "FIN",      # ej. 2025-08-15 09:20
-    "DURACION", # minutos (si está vacío, se calcula)
-    "DIAS"      # como lo espera el AV (p.ej. LUNES,MARTES o 1,3,5)
-]
+# ============= CONFIG =============
+load_dotenv()
 
-st.subheader("1) Descargar plantilla")
-plantilla = pd.DataFrame(columns=COLUMNAS_REQUERIDAS)
-buf = io.BytesIO()
-with pd.ExcelWriter(buf, engine="openpyxl") as w:
-    plantilla.to_excel(w, index=False, sheet_name="Plantilla")
-    ayuda = pd.DataFrame({
-        "Campo": COLUMNAS_REQUERIDAS,
-        "Notas": [
-            "Correo del host (cuenta en el AV).",
-            "Tema de la reunión.",
-            "Periodo académico (ej. 20242).",
-            "Nombre de la facultad tal como aparece en el AV.",
-            "Nombre de la escuela tal como aparece en el AV.",
-            "Nombre del curso tal como aparece en el AV.",
-            "Grupo/sección tal como aparece en el AV.",
-            "Fecha y hora de inicio (ej. 2025-08-15 07:40).",
-            "Fecha y hora de fin.",
-            "Minutos de duración. Si lo dejas vacío, se calcula con INICIO y FIN.",
-            "Días tal como espera el AV (LUNES,MARTES o 1,3,5)."
-        ]
-    })
-    ayuda.to_excel(w, index=False, sheet_name="AYUDA")
+# Activa/desactiva simulación (NO guarda si True)
+MODO_PRUEBA = True  # <-- CAMBIA a False para producción
 
-st.download_button(
-    "📄 Descargar plantilla (Excel)",
-    data=buf.getvalue(),
-    file_name="plantilla_cargamasiva_av.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+# Excel de entrada
+EXCEL_PATH = os.getenv("EXCEL_PATH", "videoconferencias.xlsx")
+
+# URL (login te redirige a videoconferencias)
+AV_URL = os.getenv(
+    "AV_URL",
+    "https://aulavirtual2.autonomadeica.edu.pe/login?ReturnUrl=%2F"
+)
+AV_VC_URL = os.getenv(
+    "AV_VC_URL",
+    "https://aulavirtual2.autonomadeica.edu.pe/web/conference/videoconferencias"
 )
 
-# -----------------------
-# Subir y validar archivo
-# -----------------------
-st.subheader("2) Subir y validar tu archivo")
-archivo = st.file_uploader("Sube el Excel (.xlsx) con tus videoconferencias", type=["xlsx"])
+USERNAME = os.getenv("AV_USER", "superadmin")
+PASSWORD = os.getenv("AV_PASS", "tju.uzq!pgu7XGU0xrm")
 
-def _a_dt(x):
+TZ = os.getenv("TZ", "America/Lima")
+
+LOG_DIR = "logs"
+SS_DIR  = "screenshots"
+os.makedirs(LOG_DIR, exist_ok=True)
+os.makedirs(SS_DIR,  exist_ok=True)
+
+TXT_LOG = os.path.join(LOG_DIR, "log_resultados.txt")
+
+# ============= UTILIDADES =============
+def now_tag() -> str:
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+def a_dt(x):
     try:
         v = pd.to_datetime(x)
-        if pd.isna(v): return None
-        return pd.to_datetime(v).to_pydatetime()
+        if pd.isna(v):
+            return None
+        return v
     except Exception:
         return None
 
-def _duracion_min(inicio, fin):
-    if not inicio or not fin:
+def duracion_min(inicio, fin) -> int:
+    if inicio is None or fin is None:
         return None
-    delta = (fin - inicio).total_seconds()/60
+    delta = (fin - inicio).total_seconds() / 60
     if delta < 0:
-        delta += 24*60
+        delta += 24 * 60
     return int(round(delta))
 
-df = None
-if archivo is not None:
-    df = pd.read_excel(archivo)
-    df.columns = [c.upper().strip() for c in df.columns]
+def write_logs(rows: List[Dict[str, Any]]) -> str:
+    ts = now_tag()
+    txt_path = os.path.join(LOG_DIR, f"log_resultados_{ts}.txt")
+    csv_path = os.path.join(LOG_DIR, f"log_resultados_{ts}.csv")
 
-    faltantes = [c for c in COLUMNAS_REQUERIDAS if c not in df.columns]
-    if faltantes:
-        st.error("Faltan columnas obligatorias: " + ", ".join(faltantes))
-    else:
-        prev = df.copy()
-        prev["_INICIO_DT"] = prev["INICIO"].apply(_a_dt)
-        prev["_FIN_DT"]    = prev["FIN"].apply(_a_dt)
+    with open(txt_path, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(
+                f"[{r['timestamp']}] {r['status']} | {r['correo']} | TEMA: {r['tema']} | "
+                f"{r['inicio']} -> {r['fin']} | {r['mensaje']}\n"
+            )
 
-        def _dur_preview(row):
-            val = row.get("DURACION")
-            try:
-                if pd.isna(val) or str(val).strip() == "":
-                    return _duracion_min(row["_INICIO_DT"], row["_FIN_DT"])
-                return int(val)
-            except Exception:
-                return _duracion_min(row["_INICIO_DT"], row["_FIN_DT"])
+    fieldnames = [
+        "timestamp","status","correo","tema","periodo","facultad","escuela","curso",
+        "grupo","inicio","fin","duracion","dias","mensaje","meeting_url"
+    ]
+    with open(csv_path, "w", encoding="utf-8", newline="") as c:
+        w = csv.DictWriter(c, fieldnames=fieldnames)
+        w.writeheader()
+        for r in rows:
+            w.writerow({k: r.get(k, "") for k in fieldnames})
 
-        prev["DURACION_PREVIEW"] = prev.apply(_dur_preview, axis=1)
-        prev["OK_INICIO"]   = prev["_INICIO_DT"].apply(lambda x: x is not None)
-        prev["OK_FIN"]      = prev["_FIN_DT"].apply(lambda x: x is not None)
-        prev["OK_DURACION"] = prev["DURACION_PREVIEW"].apply(lambda x: isinstance(x, int) and x > 0)
+    return f"TXT: {txt_path} | CSV: {csv_path}"
 
-        st.success(f"Archivo cargado: {len(prev)} filas • {len(prev.columns)} columnas")
-        st.caption("Se muestran las primeras 20 filas. DURACION_PREVIEW es solo para verificación.")
-        st.dataframe(prev.head(20), use_container_width=True)
+def prep_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    t = df.copy()
+    t.columns = [c.upper().strip() for c in t.columns]
+    req = ["CORREO","TEMA","PERIODO","FACULTAD","ESCUELA","CURSO","GRUPO",
+           "INICIO","FIN","DURACION","DIAS"]
+    faltan = [c for c in req if c not in t.columns]
+    if faltan:
+        raise RuntimeError("Faltan columnas obligatorias: " + ", ".join(faltan))
 
-        problemas = []
-        if not prev["OK_INICIO"].all():   problemas.append("Hay filas con INICIO inválido/no parseable.")
-        if not prev["OK_FIN"].all():      problemas.append("Hay filas con FIN inválido/no parseable.")
-        if not prev["OK_DURACION"].all(): problemas.append("Hay filas con DURACION vacía o no válida (se puede autocalcular).")
+    t["_INICIO_DT"] = t["INICIO"].apply(a_dt)
+    t["_FIN_DT"]    = t["FIN"].apply(a_dt)
 
-        if problemas:
-            st.warning("⚠️ Observaciones:\n- " + "\n- ".join(problemas))
-        else:
-            st.success("✅ Listo para el siguiente paso (ejecución).")
-
-st.divider()
-
-# ===== 2.1) Aplicar FECHAS GLOBALES (opcional) =====
-st.subheader("2.1) Aplicar fechas globales (opcional)")
-colf1, colf2 = st.columns(2)
-fecha_inicio_global = colf1.date_input("Fecha de INICIO (global)", value=datetime.today().date())
-fecha_fin_global    = colf2.date_input("Fecha de FIN (global)", value=fecha_inicio_global)
-aplicar = st.button("📌 Aplicar fechas globales a INICIO y FIN y preparar descarga")
-
-if archivo is not None and aplicar and df is not None:
-    df_adj = df.copy()
-    df_adj.columns = [c.upper().strip() for c in df_adj.columns]
-
-    ini_dt = df_adj["INICIO"].apply(_a_dt)
-    fin_dt = df_adj["FIN"].apply(_a_dt)
-
-    def _combina_fecha(fecha, x_datetime):
-        if x_datetime is None:
-            return None
-        return datetime.combine(fecha, x_datetime.time())
-
-    df_adj["INICIO"] = [ _combina_fecha(fecha_inicio_global, v) for v in ini_dt ]
-    df_adj["FIN"]    = [ _combina_fecha(fecha_fin_global,    v) for v in fin_dt ]
-
-    def _dur_out(row):
-        val = row.get("DURACION")
+    def _dur(row):
+        v = row.get("DURACION")
         try:
-            if pd.isna(val) or str(val).strip() == "":
-                return _duracion_min(_a_dt(row["INICIO"]), _a_dt(row["FIN"]))
-            return int(val)
+            if pd.isna(v) or str(v).strip() == "":
+                return duracion_min(row["_INICIO_DT"], row["_FIN_DT"])
+            return int(v)
         except Exception:
-            return _duracion_min(_a_dt(row["INICIO"]), _a_dt(row["FIN"]))
+            return duracion_min(row["_INICIO_DT"], row["_FIN_DT"])
 
-    df_adj["DURACION"] = df_adj.apply(_dur_out, axis=1)
+    t["DURACION_CALC"] = t.apply(_dur, axis=1)
+    return t
 
-    st.success("Fechas aplicadas. Vista previa (primeras 20 filas):")
-    st.dataframe(df_adj.head(20), use_container_width=True)
+# ============= PLAYWRIGHT HELPERS =============
+def login(page):
+    page.goto(AV_URL, wait_until="domcontentloaded")
+    page.wait_for_timeout(300)
 
-    buf_out = io.BytesIO()
-    with pd.ExcelWriter(
-        buf_out,
-        engine="openpyxl",
-        date_format="yyyy-mm-dd hh:mm",
-        datetime_format="yyyy-mm-dd hh:mm"
-    ) as w:
-        df_adj.to_excel(w, index=False, sheet_name="Hoja1")
+    # Inputs de login
+    user_loc = page.locator(
+        "input[ng-model='username'], input[placeholder='USUARIO'], input[name='username']"
+    ).first
+    pass_loc = page.locator(
+        "input[type='password'], input[placeholder='CONTRASEÑA'], input[name='password']"
+    ).first
 
-    st.download_button(
-        "💾 Descargar Excel con fechas aplicadas",
-        data=buf_out.getvalue(),
-        file_name="videoconferencias_con_fechas.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    user_loc.wait_for(state="visible", timeout=10000)
+    pass_loc.wait_for(state="visible", timeout=10000)
+
+    # Usuario: tecleo para eventos
+    user_loc.fill("")
+    try:
+        user_loc.type(USERNAME, delay=30)
+    except:
+        user_loc.click()
+        page.keyboard.insert_text(USERNAME)
+
+    # Contraseña: fijar EXACTO por JS (evita mayúscula inicial)
+    pass_loc.evaluate(
+        """(el, v) => {
+            try { el.setAttribute('type','password'); } catch(e){}
+            try { el.setAttribute('autocapitalize','off'); } catch(e){}
+            try { el.setAttribute('autocorrect','off'); } catch(e){}
+            try { el.setAttribute('autocomplete','off'); } catch(e){}
+            try { el.setAttribute('spellcheck','false'); } catch(e){}
+            try { el.style.textTransform = 'none'; } catch(e){}
+            el.value = v;
+            el.dispatchEvent(new Event('input',  { bubbles:true }));
+            el.dispatchEvent(new Event('change', { bubbles:true }));
+        }""",
+        PASSWORD
     )
 
-    st.session_state["df_para_ejecucion"] = df_adj
+    # Botón INGRESAR
+    clicked = False
+    for txt in ["INGRESAR","Ingresar","Entrar","Acceder","Iniciar sesión","Login"]:
+        try:
+            page.get_by_role("button", name=txt, exact=False).click(timeout=1500)
+            clicked = True
+            break
+        except:
+            try:
+                page.locator(f"button:has-text('{txt}')").first.click(timeout=1500)
+                clicked = True
+                break
+            except:
+                continue
+    if not clicked:
+        try:
+            pass_loc.press("Enter")
+        except:
+            pass
 
-# ========================
-# 3) Ejecutar (prueba/producción)
-# ========================
-st.subheader("3) Ejecutar lote")
-col1, col2, _ = st.columns([1,1,3], vertical_alignment="center")
-with col1:
-    modo = st.selectbox("Modo", ["PRUEBA (sin navegador)", "PRUEBA VISUAL (navegador, sin guardar)", "PRODUCCIÓN"], index=0)
-with col2:
-    headless = st.checkbox("Headless (oculto)", value=True, help="Desmárcalo para ver el navegador en PRUEBA VISUAL/PRODUCCIÓN")
+    try:
+        page.wait_for_load_state("networkidle", timeout=15000)
+    except:
+        page.wait_for_timeout(800)
 
-df_to_run = st.session_state.get("df_para_ejecucion", df)
-if df_to_run is not None:
-    ejecutar = st.button("🚀 Ejecutar ahora")
-    if ejecutar:
-        from runner_av import run_batch
-        resumen = run_batch(df_to_run, modo=modo, headless=headless)
+    # Ir directo al módulo de videoconferencias
+    try:
+        page.goto(AV_VC_URL, wait_until="domcontentloaded")
+        page.wait_for_load_state("networkidle", timeout=10000)
+    except:
+        pass
 
-        st.success(f"✅ Lote terminado • Total: {resumen['total']} • OK: {resumen['ok']} • Fallas: {resumen['fail']}")
-        st.write(f"📄 Log TXT: {resumen['log_txt']}")
-        st.write(f"📊 Log CSV: {resumen['log_csv']}")
-        if "screenshots_dir" in resumen:
-            st.caption(f"Capturas: {resumen['screenshots_dir']}")
-else:
-    st.info("Sube primero tu Excel para habilitar la ejecución.")
+def click_swal_ok(page, timeout=20000):
+    # Soporta sweetalert/sweetalert2
+    try:
+        page.locator(".swal-button--confirm, .swal2-confirm").first.click(timeout=timeout)
+    except:
+        pass
+
+def abrir_nueva_vc(page) -> bool:
+    # Busca distintas variantes del botón
+    for txt in [
+        "Nueva videoconferencia","Nueva Videoconferencia","Nueva conferencia",
+        "Crear videoconferencia","Agregar videoconferencia","Nueva","Crear"
+    ]:
+        try:
+            page.get_by_role("button", name=txt, exact=False).first.click(timeout=1500)
+            return True
+        except:
+            try:
+                page.get_by_text(txt, exact=False).first.click(timeout=1500)
+                return True
+            except:
+                continue
+    # Fallback: ícono (+)
+    try:
+        page.locator("button:has(svg)").filter(has_text="").first.click(timeout=1500)
+        return True
+    except:
+        return False
+
+def safe_fill(page, label_text: str, value: Any):
+    if value is None or str(value).strip() == "":
+        return
+    value = str(value)
+    for try_fn in [
+        lambda: page.get_by_label(label_text, exact=False).fill(value),
+        lambda: page.locator(f"input[placeholder*='{label_text}' i]").first.fill(value),
+        lambda: page.locator(f"input[name*='{label_text.lower()}']").first.fill(value),
+        lambda: page.locator(f"textarea[placeholder*='{label_text}' i]").first.fill(value),
+    ]:
+        try:
+            try_fn()
+            return
+        except:
+            continue
+
+def safe_select(page, label_text: str, value: Any):
+    if value is None or str(value).strip() == "":
+        return
+    value = str(value)
+    # <select>
+    try:
+        page.get_by_label(label_text, exact=False).select_option(label=value)
+        return
+    except:
+        pass
+    # combobox/autocomplete
+    for try_fn in [
+        lambda: page.get_by_label(label_text, exact=False).fill(value),
+        lambda: page.locator(f"[role='combobox'][aria-label*='{label_text}' i]").first.fill(value),
+        lambda: page.locator(f"input[aria-label*='{label_text}' i]").first.fill(value),
+        lambda: page.locator(f"input[placeholder*='{label_text}' i]").first.fill(value),
+    ]:
+        try:
+            try_fn()
+            page.wait_for_timeout(120)
+            page.keyboard.press("Enter")
+            return
+        except:
+            continue
+
+def marcar_dias(page, dias_str: str):
+    if not dias_str:
+        return
+    dias = [d.strip() for d in str(dias_str).replace("|", ",").split(",") if d.strip()]
+    DIA_MAP = {
+        "1":"LUNES","2":"MARTES","3":"MIÉRCOLES","4":"JUEVES","5":"VIERNES","6":"SÁBADO","7":"DOMINGO",
+        "LU":"LUNES","MA":"MARTES","MI":"MIÉRCOLES","JU":"JUEVES","VI":"VIERNES","SA":"SÁBADO","DO":"DOMINGO",
+        "LUNES":"LUNES","MARTES":"MARTES","MIERCOLES":"MIÉRCOLES","MIÉRCOLES":"MIÉRCOLES","JUEVES":"JUEVES",
+        "VIERNES":"VIERNES","SABADO":"SÁBADO","SÁBADO":"SÁBADO","DOMINGO":"DOMINGO",
+    }
+    for d in dias:
+        dd = DIA_MAP.get(d.upper(), d)
+        ok = False
+        try:
+            page.get_by_label(dd, exact=False).check()
+            ok = True
+        except:
+            try:
+                page.get_by_text(dd, exact=False).first.click()
+                ok = True
+            except:
+                pass
+        if not ok:
+            try:
+                page.locator(f"input[type='checkbox'][value*='{dd}' i]").first.check()
+            except:
+                pass
+
+def llenar_formulario(page, row: Dict[str, Any]):
+    # Selects
+    safe_select(page, "Periodo",  row.get("PERIODO", ""))
+    safe_select(page, "Facultad", row.get("FACULTAD", ""))
+    safe_select(page, "Escuela",  row.get("ESCUELA", ""))
+    safe_select(page, "Curso",    row.get("CURSO", ""))
+    safe_select(page, "Grupo",    row.get("GRUPO", ""))
+
+    # Inputs
+    safe_fill(page, "Correo", row.get("CORREO", ""))
+    safe_fill(page, "Tema",   row.get("TEMA", ""))
+
+    def fmt(dt):
+        try:
+            return pd.to_datetime(dt).strftime("%Y-%m-%d %H:%M")
+        except:
+            return ""
+    safe_fill(page, "Inicio", fmt(row.get("_INICIO_DT")))
+    safe_fill(page, "Fin",    fmt(row.get("_FIN_DT")))
+
+    dur = row.get("DURACION_CALC", "") or row.get("DURACION", "")
+    safe_fill(page, "Duración", str(dur))
+    safe_fill(page, "Duracion", str(dur))  # variante sin tilde
+
+    # Días
+    marcar_dias(page, row.get("DIAS", ""))
+
+# ============= MAIN =============
+def main():
+    df = pd.read_excel(EXCEL_PATH)
+    t  = prep_dataframe(df)
+
+    resultados: List[Dict[str, Any]] = []
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=False, slow_mo=400, args=["--start-maximized"])
+        context = browser.new_context(no_viewport=True, locale="es-PE", timezone_id=TZ)
+        page = context.new_page()
+
+        try:
+            # 1) Login + ir al módulo
+            login(page)
+
+            # 2) Iterar filas
+            for i, r in t.iterrows():
+                fila = r.to_dict()
+                correo = str(fila.get("CORREO",""))
+                tema   = str(fila.get("TEMA",""))
+
+                try:
+                    # 2.1) Abrir “Nueva videoconferencia”
+                    ok = abrir_nueva_vc(page)
+                    if not ok:
+                        raise RuntimeError("No se pudo abrir el formulario 'Nueva videoconferencia'.")
+
+                    page.wait_for_timeout(600)
+
+                    # 2.2) Llenar
+                    llenar_formulario(page, fila)
+
+                    # 2.3) Captura del estado
+                    ss_path = os.path.join(SS_DIR, f"fila{i+1}_{'preview' if MODO_PRUEBA else 'prod'}_{now_tag()}.png")
+                    try:
+                        page.screenshot(path=ss_path, full_page=True)
+                    except:
+                        pass
+
+                    # 2.4) Guardar / o cerrar sin guardar
+                    if MODO_PRUEBA:
+                        # Cerrar modal sin guardar (intenta botón "Cerrar"/"Cancelar" o X)
+                        cerrados = False
+                        for txt in ["Cerrar","Cancelar","Cancelar cambios"]:
+                            try:
+                                page.get_by_role("button", name=txt, exact=False).first.click(timeout=800)
+                                cerrados = True
+                                break
+                            except:
+                                try:
+                                    page.get_by_text(txt, exact=False).first.click(timeout=800)
+                                    cerrados = True
+                                    break
+                                except:
+                                    continue
+                        if not cerrados:
+                            try:
+                                page.locator("button.close, .modal-header button:has(svg), .modal-header button.close").first.click(timeout=800)
+                            except:
+                                pass
+                        status  = "SIMULADO_VISUAL"
+                        mensaje = "Formulario llenado (NO guardado)."
+                        meeting = ""
+                    else:
+                        # Guardar
+                        guardado = False
+                        for txt in ["Guardar","Crear","Crear videoconferencia","Guardar cambios","Save"]:
+                            try:
+                                page.get_by_role("button", name=txt, exact=False).first.click(timeout=1500)
+                                guardado = True
+                                break
+                            except:
+                                try:
+                                    page.get_by_text(txt, exact=False).first.click(timeout=1500)
+                                    guardado = True
+                                    break
+                                except:
+                                    continue
+
+                        msg = ""
+                        if guardado:
+                            try:
+                                # Espera al popup y hace OK
+                                click_swal_ok(page, timeout=20000)
+                                msg = "Guardado"
+                            except:
+                                msg = "Guardado (sin confirmación)"
+                        status  = "GUARDADO"
+                        mensaje = msg
+                        meeting = ""
+
+                    resultados.append({
+                        "timestamp": datetime.now().isoformat(timespec="seconds"),
+                        "status": status,
+                        "correo": correo,
+                        "tema": tema,
+                        "periodo": str(fila.get("PERIODO","")),
+                        "facultad": str(fila.get("FACULTAD","")),
+                        "escuela": str(fila.get("ESCUELA","")),
+                        "curso": str(fila.get("CURSO","")),
+                        "grupo": str(fila.get("GRUPO","")),
+                        "inicio": str(fila.get("_INICIO_DT","")),
+                        "fin": str(fila.get("_FIN_DT","")),
+                        "duracion": str(fila.get("DURACION_CALC","")),
+                        "dias": str(fila.get("DIAS","")),
+                        "mensaje": mensaje,
+                        "meeting_url": meeting
+                    })
+
+                except Exception as e:
+                    # Captura de error
+                    err_ss = os.path.join(SS_DIR, f"error_row{i+1}_{now_tag()}.png")
+                    try:
+                        page.screenshot(path=err_ss, full_page=True)
+                    except:
+                        pass
+
+                    resultados.append({
+                        "timestamp": datetime.now().isoformat(timespec="seconds"),
+                        "status": "ERROR",
+                        "correo": correo,
+                        "tema": tema,
+                        "periodo": str(fila.get("PERIODO","")),
+                        "facultad": str(fila.get("FACULTAD","")),
+                        "escuela": str(fila.get("ESCUELA","")),
+                        "curso": str(fila.get("CURSO","")),
+                        "grupo": str(fila.get("GRUPO","")),
+                        "inicio": str(fila.get("_INICIO_DT","")),
+                        "fin": str(fila.get("_FIN_DT","")),
+                        "duracion": str(fila.get("DURACION_CALC","")),
+                        "dias": str(fila.get("DIAS","")),
+                        "mensaje": f"Excepción: {e}",
+                        "meeting_url": ""
+                    })
+
+            # Espera final para ver la última pantalla
+            page.wait_for_timeout(1200)
+
+        finally:
+            try:
+                context.close()
+                browser.close()
+            except:
+                pass
+
+    # Escribir logs
+    resumen_paths = write_logs(resultados)
+    print("==== PROCESO TERMINADO ====")
+    print(f"Total: {len(resultados)} | OK: {len([r for r in resultados if r['status']!='ERROR'])} | "
+          f"Errores: {len([r for r in resultados if r['status']=='ERROR'])}")
+    print(resumen_paths)
+
+if __name__ == "__main__":
+    main()
